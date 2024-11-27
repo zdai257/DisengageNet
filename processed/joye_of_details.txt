@@ -1,0 +1,13 @@
+Input:joye.jpg
+Input full path:/home/openface-build/joye.jpg
+Camera parameters:481.771,481.771,370,185
+Output HOG:joye.hog
+Output image:joye.jpg
+Output aligned directory:joye_aligned
+Output csv:joye.csv
+Gaze: 1
+AUs: 1
+Landmarks 2D: 1
+Landmarks 3D: 1
+Pose: 1
+Shape parameters: 1
