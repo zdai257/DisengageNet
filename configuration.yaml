@@ -1,0 +1,77 @@
+# General Configuration
+model:
+  encoder:
+    type: "DINOv2"                  # Pretrained image encoder (DINOv2, CLIP, etc.)
+    pretrained: true                # Use pretrained weights
+    checkpoint: "path/to/encoder.pth"  # Path to encoder checkpoint (if required)
+    input_size: 224                 # Input image size
+  head:
+    type: "ResNet"                  # Head type (ResNet, FasterRCNN, OpenFace, etc.)
+    pretrained: true                # Use pretrained weights for head
+    checkpoint: "path/to/head.pth"  # Path to head checkpoint (if required)
+  decoder:
+    type: "ViT"                     # Decoder type (ViT, transformer-like)
+    hidden_size: 512                # Hidden size of the decoder
+    depth: 12                       # Number of layers in the decoder
+    num_heads: 8                    # Number of attention heads
+    mlp_ratio: 4.0                  # Ratio for MLP in ViT decoder
+    dropout: 0.1                    # Dropout rate
+    activation: "gelu"              # Activation function (relu, gelu, leaky_relu)
+    output_size: 128                # Dimension of decoder output features
+
+multi_head_output:
+  gaze_target_location: true        # Predict gazed target location in-frame
+  out_of_frame_vector: true         # Predict out-of-frame vector
+  eye_contact_classifier: true      # Binary classification for eye contact
+  hidden_size: 256                  # Hidden size for multi-head layers
+  dropout: 0.2                      # Dropout rate for multi-head outputs
+
+data:
+  train_path: "data/train.json"     # Path to preprocessed training dataset
+  test_path: "data/test.json"       # Path to preprocessed test dataset
+  mean: [0.485, 0.456, 0.406]       # Normalization mean for images (ImageNet values)
+  std: [0.229, 0.224, 0.225]        # Normalization std for images (ImageNet values)
+  augmentations:                    # Data augmentation settings
+    horizontal_flip: true
+    vertical_flip: false
+    random_crop: true
+    rotation: 15                   # Rotation in degrees
+    color_jitter:                  # Jitter settings (brightness, contrast, etc.)
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+
+train:
+  batch_size: 32                    # Batch size for training
+  num_epochs: 50                    # Number of training epochs
+  lr: 0.001                         # Base learning rate
+  optimizer: "adamw"                # Optimizer type (adam, adamw, sgd, etc.)
+  weight_decay: 0.01                # Weight decay for optimizer
+  lr_scheduler:                     # Learning rate scheduler settings
+    type: "cosine"                  # Scheduler type (cosine, step, exponential, etc.)
+    step_size: 10                   # Step size for step scheduler
+    gamma: 0.1                      # Decay factor for step/exponential scheduler
+    min_lr: 1e-6                    # Minimum learning rate for cosine/other schedulers
+  gradient_clipping: 5.0            # Gradient clipping threshold
+
+eval:
+  checkpoint: "outputs/models/model_epoch_50.pth"  # Path to the checkpoint for evaluation
+  batch_size: 64                    # Batch size for evaluation
+  metrics:                          # Evaluation metrics
+    - accuracy
+    - precision
+    - recall
+
+inference:
+  image_path: "path/to/image.jpg"   # Path to the image for inference
+  output_dir: "outputs/inference/" # Directory to save inference results
+
+logging:
+  log_dir: "outputs/logs/"          # Directory to save logs
+  save_interval: 5                  # Interval for saving model checkpoints
+
+hardware:
+  device: "cuda"                    # Device to use (cuda, cpu)
+  num_workers: 4                    # Number of data loader workers
+  pin_memory: true                  # Pin memory for faster data loading
