@@ -3,4 +3,7 @@ __pycache__/
 .idea
 *.pt
 output*/
+VAT/
+MPIIFaceGaze/
+Columbia/
 
