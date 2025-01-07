@@ -28,7 +28,9 @@ multi_head_output:
 
 data:
   train_path: "data/train.json"     # Path to preprocessed training dataset
+  train_label: ""
   test_path: "data/test.json"       # Path to preprocessed test dataset
+  test_label: ""
   mean: [0.485, 0.456, 0.406]       # Normalization mean for images (ImageNet values)
   std: [0.229, 0.224, 0.225]        # Normalization std for images (ImageNet values)
   augmentations:                    # Data augmentation settings
@@ -44,7 +46,7 @@ data:
 
 train:
   batch_size: 32                    # Batch size for training
-  num_epochs: 50                    # Number of training epochs
+  epochs: 50                    # Number of training epochs
   lr: 0.001                         # Base learning rate
   optimizer: "adamw"                # Optimizer type (adam, adamw, sgd, etc.)
   weight_decay: 0.01                # Weight decay for optimizer
@@ -72,6 +74,6 @@ logging:
   save_interval: 5                  # Interval for saving model checkpoints
 
 hardware:
-  device: "cuda"                    # Device to use (cuda, cpu)
+  device: "cuda:2"                    # Device to use (cuda, cpu)
   num_workers: 4                    # Number of data loader workers
   pin_memory: true                  # Pin memory for faster data loading
