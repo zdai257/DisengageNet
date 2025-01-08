@@ -94,31 +94,45 @@ class CustomLoss(torch.nn.Module):
             beta (float): Weight for the MSE loss.
         """
         super(CustomLoss, self).__init__()
-        self.bce_loss = torch.nn.BCELoss()  # Binary Cross-Entropy Loss
-        self.mse_loss = torch.nn.MSELoss()  # Mean Squared Error Loss
+        self.bce_loss = torch.nn.BCELoss(reduction='sum')  # Binary Cross-Entropy Loss
+        self.mse_loss = torch.nn.MSELoss(reduce=False, reduction='sum')  # Mean Squared Error Loss
         self.alpha = alpha  # Weight for BCE
         self.beta = beta  # Weight for MSE
 
-    def forward(self, classification_pred, classification_target,
+    def forward(self, classification_pred, classification_target, 
                 regression_pred, regression_target):
         """
-        Compute the combined loss.
+        Compute the combined loss for variable Num_items.
         Args:
-            classification_pred (Tensor): Predicted probabilities for classification (BCE input).
-            classification_target (Tensor): Ground truth for classification (BCE target).
-            regression_pred (Tensor): Predicted distances for regression (MSE input).
-            regression_target (Tensor): Ground truth distances for regression (MSE target).
+            classification_pred (list of Tensors): Predicted probabilities for classification (BCE input), shape (B, Num_items).
+            classification_target (list of Tensors): Ground truth for classification (BCE target), shape (B, Num_items).
+            regression_pred (list of Tensors): Predicted distances for regression (MSE input), shape (B, Num_items, 2).
+            regression_target (list of Tensors): Ground truth distances for regression (MSE target), shape (B, Num_items, 2).
         Returns:
             Tensor: Combined loss value.
         """
-        # Compute BCE loss
-        bce_loss_value = self.bce_loss(classification_pred, classification_target)
+        total_bce_loss = 0.0
+        total_mse_loss = 0.0
+        total_items = 0
 
-        # Compute MSE loss
-        mse_loss_value = self.mse_loss(regression_pred, regression_target)
+        # Iterate over the batch
+        for cls_pred, cls_target, reg_pred, reg_target in zip(
+                classification_pred, classification_target, regression_pred, regression_target):
+            # Compute BCE loss for this sample (classification)
+            total_bce_loss += self.bce_loss(cls_pred, cls_target)
+
+            # Compute MSE loss for this sample (regression)
+            total_mse_loss += self.mse_loss(reg_pred, reg_target)
+
+            # Accumulate the total number of items for normalization
+            total_items += cls_pred.size(0)
+
+        # Normalize losses by total items
+        total_bce_loss /= total_items
+        total_mse_loss /= total_items
 
         # Combine losses with weights
-        total_loss = self.alpha * bce_loss_value + self.beta * mse_loss_value
+        total_loss = self.alpha * total_bce_loss + self.beta * total_mse_loss
 
         return total_loss
 
@@ -187,11 +201,46 @@ def main():
     inout_gts = []
 
     # START TRAINING
-    for _, (images, bboxes, gazex, gazey, inout) in tqdm(enumerate(dataloader), desc="Evaluating",
-                                                         total=len(dataloader)):
-        preds = model.forward({"images": images.to(device), "bboxes": bboxes})
+    for epoch in range(config['train']['epochs']):
+        epoch_loss = 0.
 
-        # eval each instance (head)
+        for batch, (images, bboxes, gazex, gazey, inout) in tqdm(enumerate(train_loader), total=len(train_loader)):
+            model.train(True)
+            # freeze batchnorm layers
+            for module in model.modules():
+                if isinstance(module, torch.nn.modules.BatchNorm1d):
+                    module.eval()
+                if isinstance(module, torch.nn.modules.BatchNorm2d):
+                    module.eval()
+                if isinstance(module, torch.nn.modules.BatchNorm3d):
+                    module.eval()
+            
+            # forward pass
+            preds = model({"images": images.to(device), "bboxes": bboxes})
+
+
+            classification_preds, regression_preds = [], []
+            for idx in range(0, len(bboxes)):
+                
+                classification_preds.append(preds['inout'][:,idx,:])  # Shape: (B, )
+                regression_preds.append(preds['heatmap'][:,idx,:])  # Shape: (B, 2)
+
+            # TODO: Compute total loss
+            loss = loss_fn(classification_preds, inout, regression_preds, torch.cat((gazex, gazey), 1))
+        
+            # Backpropagation and optimization
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            # Accumulate loss for reporting
+            epoch_loss += loss.item()
+
+        # Print epoch loss
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {epoch_loss / train_length:.4f}")
+
+
+    # discuss per image, and per head in image
+    """
         for i in range(images.shape[0]):  # per image
             for j in range(len(bboxes[i])):  # per head
                 if inout[i][j] == 1:  # in frame
@@ -205,6 +254,7 @@ def main():
     print("AUC: {}".format(np.array(aucs).mean()))
     print("Avg L2: {}".format(np.array(l2s).mean()))
     print("Inout AP: {}".format(average_precision_score(inout_gts, inout_preds)))
+    """
 
 
 if __name__ == "__main__":
