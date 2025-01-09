@@ -254,7 +254,7 @@ def main():
             for b in range(0, batch_size):
                 inout_list, xy_list = [], []
                 for head_idx in range(0, preds['inout'][b].shape[0]):
-                    inout_list.append(preds['inout'][b][head_idx].detach().cpu())
+                    inout_list.append(preds['inout'][b][head_idx].detach().cpu().float())
                     heatmap_tensor = preds['heatmap'][b][head_idx]
                     # convert pred_heatmap to (x, y) loc
                     argmax = heatmap_tensor.detach().cpu().flatten().argmax().item()
@@ -284,7 +284,6 @@ def main():
             print(len(regression_preds), regression_preds[0])
             print(len(classification_preds), classification_preds[0])
             print(len(inout), inout[0])
-            continue
 
             # TODO: Compute total loss
             loss = loss_fn(classification_preds, inout, regression_preds, gt_gaze_xy)
