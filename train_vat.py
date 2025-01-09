@@ -257,10 +257,10 @@ def main():
             for b in range(0, batch_size):
                 inout_list, xy_list = [], []
                 for head_idx in range(0, preds['inout'][b].shape[0]):
-                    inout_list.append(preds['inout'][b][head_idx].detach().cpu())
+                    inout_list.append(preds['inout'][b][head_idx].cpu())
                     heatmap_tensor = preds['heatmap'][b][head_idx]
                     # convert pred_heatmap to (x, y) loc
-                    argmax = heatmap_tensor.detach().cpu().flatten().argmax().item()
+                    argmax = heatmap_tensor.flatten().argmax().item()
                     pred_y, pred_x = np.unravel_index(argmax, (64, 64))
                     pred_x = pred_x / 64.
                     pred_y = pred_y / 64.
