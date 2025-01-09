@@ -15,7 +15,7 @@ import yaml
 
 from network.network_builder import get_gazelle_model, get_gt360_model
 # VAT native data_loader
-from dataset_builder import VideoAttTarget_video
+#from dataset_builder import VideoAttTarget_video
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--data_path", type=str, default="./data/videoattentiontarget")
@@ -190,8 +190,8 @@ def main():
         raise TypeError("Optimizer not supported!")
 
     # linear learning rate scheduler
-    lr_step_size = config['lr_scheduler']['step_size']
-    gamma = config['lr_scheduler']['gamma']  # Factor by which the learning rate will be reduced
+    lr_step_size = config['train']['lr_scheduler']['step_size']
+    gamma = config['train']['lr_scheduler']['gamma']  # Factor by which the learning rate will be reduced
     scheduler = StepLR(optimizer, step_size=lr_step_size, gamma=gamma)
 
     input_resolution = config['data']['input_resolution']
@@ -255,8 +255,8 @@ def main():
             classification_preds, regression_preds = [], []
             for idx in range(0, len(bboxes)):
                 
-                classification_preds.append(preds['inout'][:, idx, :])  # Shape: (B, )
-                regression_preds.append(preds['heatmap'][:, idx, :])  # Shape: (B, 2)
+                classification_preds.append(preds['inout'][idx])  # Shape: (B, )
+                regression_preds.append(preds['heatmap'][idx])  # Shape: (B, 2)
 
             print(classification_preds[0].shape, inout.shape)
             print(regression_preds[0].shape, torch.cat((gazex, gazey), 1).shape)

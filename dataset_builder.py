@@ -6,7 +6,8 @@ import json
 import torch
 from torch.utils.data import Dataset, DataLoader, Sampler
 from PIL import Image
-import cv2
+#import cv2
+from skimage.transform import resize
 from torchvision import transforms
 from torchvision.transforms import Compose, ToTensor
 import torchvision.transforms.functional as TF
@@ -255,8 +256,8 @@ class VideoAttTarget_video(Dataset):
                 img = 255 - utils.unnorm(images[i].numpy()) * 255
                 img = np.clip(img, 0, 255)
                 plt.imshow(np.transpose(img, (1, 2, 0)))
-                plt.imshow(cv2.resize(heatmaps[i], (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR), cmap='jet', alpha=0.3)
-                plt.imshow(cv2.resize(1 - head_channels[i].squeeze(0), (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR), alpha=0.2)
+                plt.imshow(resize(heatmaps[i], (self.input_size, self.input_size)), cmap='jet', alpha=0.3)
+                plt.imshow(resize(1 - head_channels[i].squeeze(0), (self.input_size, self.input_size)), alpha=0.2)
                 plt.savefig(os.path.join('debug', 'viz_%d_inout=%d.png' % (i, gaze_inouts[i])))
                 plt.close('all')
 
