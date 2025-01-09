@@ -110,10 +110,12 @@ class CustomLoss(torch.nn.Module):
         for cls_pred, cls_target, reg_pred, reg_target in zip(
                 classification_pred, classification_target, regression_pred, regression_target):
             # Compute BCE loss for this sample (classification)
-            total_bce_loss += self.bce_loss(cls_pred, torch.tensor(cls_target, dtype=torch.float32))
+            total_bce_loss += self.bce_loss(torch.tensor(cls_pred, dtype=torch.float32),
+                                            torch.tensor(cls_target, dtype=torch.float32))
 
             # Compute MSE loss for this sample (regression)
-            total_mse_loss += self.mse_loss(reg_pred, torch.tensor(reg_target, dtype=torch.float32))
+            total_mse_loss += self.mse_loss(torch.tensor(reg_pred, dtype=torch.float32),
+                                            torch.tensor(reg_target, dtype=torch.float32))
 
             # Accumulate the total number of items for normalization
             total_items += cls_pred.size(0)
@@ -254,7 +256,7 @@ def main():
             for b in range(0, batch_size):
                 inout_list, xy_list = [], []
                 for head_idx in range(0, preds['inout'][b].shape[0]):
-                    inout_list.append(preds['inout'][b][head_idx].detach().cpu().float())
+                    inout_list.append(preds['inout'][b][head_idx].detach().cpu())
                     heatmap_tensor = preds['heatmap'][b][head_idx]
                     # convert pred_heatmap to (x, y) loc
                     argmax = heatmap_tensor.detach().cpu().flatten().argmax().item()
