@@ -43,7 +43,9 @@ if __name__ == "__main__":
 
     #transform = Compose([ToTensor(), Normalize(mean=config['data']['mean'], std=config['data']['std'])])
 
-    mock_img = torch.randn(1, 3, 448, 448)
+    B = 2
+
+    mock_img = torch.randn(B, 3, 448, 448)
     mock_head_prompt = None
     mock_input = {"images": mock_img.to(device),
                   "bboxes": [[mock_head_prompt]]
@@ -58,6 +60,9 @@ if __name__ == "__main__":
 
     predicted_heatmap = preds["heatmap"][0][head_id]
     predicted_inout = preds["inout"][0][head_id]
+
+    print(preds)
+    print(preds["inout"])
 
     # output Tensor of [64,64] for 1st head in 1st image of the batch; inout in range [0,1] -- 1 in-frame; 0 out-of-frame
     print(predicted_heatmap.shape, predicted_inout)

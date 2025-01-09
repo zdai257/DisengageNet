@@ -254,12 +254,17 @@ def main():
 
             classification_preds, regression_preds = [], []
             for idx in range(0, len(bboxes)):
-                
-                classification_preds.append(preds['inout'][idx])  # Shape: (B, )
-                regression_preds.append(preds['heatmap'][idx])  # Shape: (B, 2)
+                inout_tensor = torch.empty((config['train']['batch_size'],), dtype=torch.float32)
+                heatmap_tensor = torch.empty((config['train']['batch_size'], 64, 64), dtype=torch.float32)
+                for b in range(0, config['train']['batch_size']):
+                    inout_tensor[b] = preds['inout'][b][idx]
+                    heatmap_tensor[b] = preds['heatmap'][b][idx]
+
+                classification_preds.append(inout_tensor)  # a list of (B, )
+                regression_preds.append(heatmap_tensor)  # a list of (B, 64, 64)
 
             print(classification_preds[0].shape, inout.shape)
-            print(regression_preds[0].shape, torch.cat((gazex, gazey), 1).shape)
+            print(regression_preds[0].shape, torch.cat((gazex, gazey)).shape)
             # TODO: Compute total loss
             loss = loss_fn(classification_preds, inout, regression_preds, torch.cat((gazex, gazey), 1))
         
