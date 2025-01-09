@@ -252,17 +252,19 @@ def main():
             inout_tensor = None
             pred_x, pred_y = None, None
             for b in range(0, batch_size):
+                inout_list, xy_list = [], []
                 for head_idx in range(0, preds['inout'][b].shape[0]):
-                    inout_tensor = preds['inout'][b][head_idx]
+                    inout_list.append(preds['inout'][b][head_idx].detach().cpu())
                     heatmap_tensor = preds['heatmap'][b][head_idx]
                     # convert pred_heatmap to (x, y) loc
-                    argmax = heatmap_tensor.flatten().argmax().item()
+                    argmax = heatmap_tensor.detach().cpu().flatten().argmax().item()
                     pred_y, pred_x = np.unravel_index(argmax, (64, 64))
                     pred_x = pred_x / 64.
                     pred_y = pred_y / 64.
+                    xy_list.append((float(pred_x), float(pred_y)))
 
-                classification_preds.append(inout_tensor)  # a list of Batch*(1,)
-                regression_preds.append((pred_x, pred_y))  # a list of Batch*(2, )
+                classification_preds.append(inout_list)  # a list of Batch*[heads * <val> ]
+                regression_preds.append(xy_list)  # a list of Batch*[heads * (2,) ]
 
             #
             #print(len(preds['heatmap']), preds['heatmap'][0].shape)
@@ -273,8 +275,10 @@ def main():
 
             gt_gaze_xy = []
             for gtxs, gtys in zip(gazex, gazey):
-                 for gtx, gty in zip(gtxs, gtys):
-                     gt_gaze_xy.append((gtx[0], gty[0]))
+                gt_per_img = []
+                for gtx, gty in zip(gtxs, gtys):
+                    gt_per_img.append((gtx[0], gty[0]))
+                gt_gaze_xy.append(gt_per_img)
 
             print(len(gt_gaze_xy), gt_gaze_xy[0])
             print(len(regression_preds), regression_preds[0])
