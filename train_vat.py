@@ -249,7 +249,7 @@ def main():
 
             classification_preds, regression_preds = [], []
 
-            inout_tensor = torch.empty()
+            inout_tensor = None
             pred_x, pred_y = None, None
             for b in range(0, batch_size):
                 for head_idx in range(0, preds['inout'][b].shape[0]):
@@ -273,7 +273,14 @@ def main():
 
             gt_gaze_xy = []
             for gtxs, gtys in zip(gazex, gazey):
-                gt_gaze_xy = [(gtx[0], gty[0]) for gtx, gty in zip(gtxs, gtys)]
+                 for gtx, gty in zip(gtxs, gtys):
+                     gt_gaze_xy.append((gtx[0], gty[0]))
+
+            print(len(gt_gaze_xy), gt_gaze_xy[0])
+            print(len(regression_preds), regression_preds[0])
+            print(len(classification_preds), classification_preds[0])
+            print(len(inout), inout[0])
+            continue
 
             # TODO: Compute total loss
             loss = loss_fn(classification_preds, inout, regression_preds, gt_gaze_xy)
