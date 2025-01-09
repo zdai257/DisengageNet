@@ -108,14 +108,15 @@ class CustomLoss(torch.nn.Module):
 
         # Iterate over the batch
         for cls_pred, cls_target, reg_pred, reg_target in zip(
-                classification_pred, classification_target, regression_pred, regression_target):
+                torch.tensor(classification_pred, dtype=torch.float32),
+                torch.tensor(classification_target, dtype=torch.float32),
+                torch.tensor(regression_pred, dtype=torch.float32),
+                torch.tensor(regression_target, dtype=torch.float32)):
             # Compute BCE loss for this sample (classification)
-            total_bce_loss += self.bce_loss(torch.tensor(cls_pred, dtype=torch.float32),
-                                            torch.tensor(cls_target, dtype=torch.float32))
+            total_bce_loss += self.bce_loss(cls_pred, cls_target)
 
             # Compute MSE loss for this sample (regression)
-            total_mse_loss += self.mse_loss(torch.tensor(reg_pred, dtype=torch.float32),
-                                            torch.tensor(reg_target, dtype=torch.float32))
+            total_mse_loss += self.mse_loss(reg_pred, reg_target)
 
             # Accumulate the total number of items for normalization
             total_items += cls_pred.size(0)
