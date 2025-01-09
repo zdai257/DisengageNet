@@ -1,5 +1,6 @@
 # General Configuration
 model:
+  name: "gazelle_dinov2_vitl14_inout"
   encoder:
     type: "DINOv2"                  # Pretrained image encoder (DINOv2, CLIP, etc.)
     pretrained: true                # Use pretrained weights
@@ -58,7 +59,7 @@ train:
   gradient_clipping: 5.0            # Gradient clipping threshold
 
 eval:
-  checkpoint: "outputs/models/model_epoch_50.pth"  # Path to the checkpoint for evaluation
+  checkpoint: "gazelle_large_vitl14_inout.pt"  # Path to the checkpoint for evaluation
   batch_size: 64                    # Batch size for evaluation
   metrics:                          # Evaluation metrics
     - accuracy
@@ -66,6 +67,7 @@ eval:
     - recall
 
 inference:
+  checkpoint: "gazelle_large_vitl14_inout.pt"
   image_path: "path/to/image.jpg"   # Path to the image for inference
   output_dir: "outputs/inference/" # Directory to save inference results
 

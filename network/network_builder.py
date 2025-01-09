@@ -164,15 +164,15 @@ def get_gt360_model(config):
     #TODO return GT360(backbone)
     return None
 
-def get_gazelle_model(model_name):
+def get_gazelle_model(configuration):
     factory = {
         "gazelle_dinov2_vitb14": gazelle_dinov2_vitb14,
         "gazelle_dinov2_vitl14": gazelle_dinov2_vitl14,
         "gazelle_dinov2_vitb14_inout": gazelle_dinov2_vitb14_inout,
         "gazelle_dinov2_vitl14_inout": gazelle_dinov2_vitl14_inout,
     }
-    assert model_name in factory.keys(), "invalid model name"
-    return factory[model_name]()
+    assert configuration['model']['name'] in factory.keys(), "invalid model name"
+    return factory[configuration['model']['name']]()
 
 def gazelle_dinov2_vitb14():
     backbone = DinoV2Backbone('dinov2_vitb14')
