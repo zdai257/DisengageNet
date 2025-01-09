@@ -102,16 +102,6 @@ class CustomLoss(torch.nn.Module):
 
     def forward(self, classification_pred, classification_target, 
                 regression_pred, regression_target):
-        """
-        Compute the combined loss for variable Num_items.
-        Args:
-            classification_pred (list of Tensors): Predicted probabilities for classification (BCE input), shape (B, Num_items).
-            classification_target (list of Tensors): Ground truth for classification (BCE target), shape (B, Num_items).
-            regression_pred (list of Tensors): Predicted distances for regression (MSE input), shape (B, Num_items, 2).
-            regression_target (list of Tensors): Ground truth distances for regression (MSE target), shape (B, Num_items, 2).
-        Returns:
-            Tensor: Combined loss value.
-        """
         total_bce_loss = 0.0
         total_mse_loss = 0.0
         total_items = 0
@@ -120,10 +110,10 @@ class CustomLoss(torch.nn.Module):
         for cls_pred, cls_target, reg_pred, reg_target in zip(
                 classification_pred, classification_target, regression_pred, regression_target):
             # Compute BCE loss for this sample (classification)
-            total_bce_loss += self.bce_loss(cls_pred, cls_target)
+            total_bce_loss += self.bce_loss(cls_pred, torch.tensor(cls_target, dtype=torch.float32))
 
             # Compute MSE loss for this sample (regression)
-            total_mse_loss += self.mse_loss(reg_pred, reg_target)
+            total_mse_loss += self.mse_loss(reg_pred, torch.tensor(reg_target, dtype=torch.float32))
 
             # Accumulate the total number of items for normalization
             total_items += cls_pred.size(0)
@@ -233,6 +223,8 @@ def main():
     inout_preds = []
     inout_gts = []
 
+    batch_size = config['train']['batch_size']
+
     # START TRAINING
     for epoch in range(config['train']['epochs']):
         model.train(True)
@@ -252,29 +244,39 @@ def main():
             # forward pass
             preds = model({"images": images.to(device), "bboxes": bboxes})
 
+            # preds = a dict of{'heatmap': list of Batch_size*tensor[head_count, 64, 64],
+            #                   'inout': list of Batch_size*tensor[head_count,] }
 
             classification_preds, regression_preds = [], []
-            '''
-            for idx in range(0, len(bboxes)):
-                inout_tensor = torch.empty((config['train']['batch_size'],), dtype=torch.float32)
-                heatmap_tensor = torch.empty((config['train']['batch_size'], 64, 64), dtype=torch.float32)
-                for b in range(0, config['train']['batch_size']):
-                    inout_tensor[b] = preds['inout'][b][idx]
-                    heatmap_tensor[b] = preds['heatmap'][b][idx]
 
-                classification_preds.append(inout_tensor)  # a list of (B, )
-                regression_preds.append(heatmap_tensor)  # a list of (B, 64, 64)
-            '''
+            inout_tensor = torch.empty()
+            pred_x, pred_y = None, None
+            for b in range(0, batch_size):
+                for head_idx in range(0, preds['inout'][b].shape[0]):
+                    inout_tensor = preds['inout'][b][head_idx]
+                    heatmap_tensor = preds['heatmap'][b][head_idx]
+                    # convert pred_heatmap to (x, y) loc
+                    argmax = heatmap_tensor.flatten().argmax().item()
+                    pred_y, pred_x = np.unravel_index(argmax, (64, 64))
+                    pred_x = pred_x / 64.
+                    pred_y = pred_y / 64.
 
-            print(len(preds['heatmap']), preds['heatmap'][0].shape)
-            print(len(preds['inout']), preds['inout'][0].shape)
+                classification_preds.append(inout_tensor)  # a list of Batch*(1,)
+                regression_preds.append((pred_x, pred_y))  # a list of Batch*(2, )
 
-            print(len(gazex), gazex[0])
-            print(len(inout), inout[0])
+            #
+            #print(len(preds['heatmap']), preds['heatmap'][0].shape)
+            #print(len(preds['inout']), preds['inout'][0].shape)
+            # GT = a list of Batch*[head_count*[pixel_norm ] ]
+            #print(len(gazex), gazex[0])
+            #print(len(inout), inout[0])
 
-            exit()
+            gt_gaze_xy = []
+            for gtxs, gtys in zip(gazex, gazey):
+                gt_gaze_xy = [(gtx[0], gty[0]) for gtx, gty in zip(gtxs, gtys)]
+
             # TODO: Compute total loss
-            loss = loss_fn(classification_preds, inout, regression_preds, torch.cat((gazex, gazey), 1))
+            loss = loss_fn(classification_preds, inout, regression_preds, gt_gaze_xy)
         
             # Backpropagation and optimization
             optimizer.zero_grad()
