@@ -14,6 +14,7 @@ from tqdm import tqdm
 import yaml
 
 from network.network_builder import get_gazelle_model, get_gt360_model
+# VAT native data_loader
 from dataset_builder import VideoAttTarget_video
 
 parser = argparse.ArgumentParser()
@@ -149,15 +150,42 @@ def main():
     lr = config['train']['lr']
     num_epochs = config['train']['epochs']
 
+    #TODO: my_net
     #my_net = get_gt360_model(config)
-    model = get_gazelle_model(config)
-    model.load_gazelle_state_dict(torch.load(args.ckpt_path, weights_only=True))
+    model, gazelle_transform = get_gazelle_model(config)
+    model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True),
+                                  include_backbone=False)
+
+    # Freeze 'backbone' parameters
+    for name, param in model.named_parameters():
+        if 'backbone' in name:
+            param.requires_grad = False  # Freeze these parameters
+        else:
+            param.requires_grad = True  # Keep these learnable
+
+    # Randomly initialize learnable parameters
+    for name, param in model.named_parameters():
+        if param.requires_grad:  # Only initialize unfrozen parameters
+            if param.dim() > 1:  # Weights
+                torch.nn.init.xavier_normal_(param)
+            else:  # Biases
+                torch.nn.init.zeros_(param)
+
+    # Verify the freezing and initialization
+    for name, param in model.named_parameters():
+        print(f"{name}: requires_grad={param.requires_grad}")
+
+    #exit()
+
     model.to(device)
 
+    # optim
     if config['train']['optimizer'] == 'Adam':
-        optimizer = Adam(model.parameters(), lr=lr)
+        #optimizer = Adam(model.parameters(), lr=lr)
+        optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
     elif config['train']['optimizer'] == 'AdamW':
-        optimizer = AdamW(model.parameters(), lr=lr)
+        #optimizer = AdamW(model.parameters(), lr=lr)
+        optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
     else:
         raise TypeError("Optimizer not supported!")
 
@@ -166,7 +194,7 @@ def main():
     gamma = config['lr_scheduler']['gamma']  # Factor by which the learning rate will be reduced
     scheduler = StepLR(optimizer, step_size=lr_step_size, gamma=gamma)
 
-    input_resolution = 224
+    input_resolution = config['data']['input_resolution']
 
     # transform
     transform_list = []
@@ -175,6 +203,7 @@ def main():
     transform_list.append(transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
     my_transform = transforms.Compose(transform_list)
 
+    # apply my_transform or gazelle_transform
     train_dataset = VideoAttentionTarget(path=config['data']['train_path'],
                                          img_transform=my_transform,
                                          split='train')
@@ -192,9 +221,13 @@ def main():
     # LOSS
     loss_fn = CustomLoss(alpha=1.0, beta=1.0)
 
-    best_val_loss = float('inf')
+    # save dir for checkpoints
+    os.makedirs(config['logging']['log_dir'], exist_ok=True)
+
+    best_loss = float('inf')
     early_stop_count = 0
 
+    # eval metrics
     aucs = []
     l2s = []
     inout_preds = []
@@ -202,10 +235,11 @@ def main():
 
     # START TRAINING
     for epoch in range(config['train']['epochs']):
+        model.train(True)
         epoch_loss = 0.
 
         for batch, (images, bboxes, gazex, gazey, inout) in tqdm(enumerate(train_loader), total=len(train_loader)):
-            model.train(True)
+
             # freeze batchnorm layers
             for module in model.modules():
                 if isinstance(module, torch.nn.modules.BatchNorm1d):
@@ -218,13 +252,14 @@ def main():
             # forward pass
             preds = model({"images": images.to(device), "bboxes": bboxes})
 
-
             classification_preds, regression_preds = [], []
             for idx in range(0, len(bboxes)):
                 
-                classification_preds.append(preds['inout'][:,idx,:])  # Shape: (B, )
-                regression_preds.append(preds['heatmap'][:,idx,:])  # Shape: (B, 2)
+                classification_preds.append(preds['inout'][:, idx, :])  # Shape: (B, )
+                regression_preds.append(preds['heatmap'][:, idx, :])  # Shape: (B, 2)
 
+            print(classification_preds[0].shape, inout.shape)
+            print(regression_preds[0].shape, torch.cat((gazex, gazey), 1).shape)
             # TODO: Compute total loss
             loss = loss_fn(classification_preds, inout, regression_preds, torch.cat((gazex, gazey), 1))
         
@@ -235,11 +270,35 @@ def main():
             # Accumulate loss for reporting
             epoch_loss += loss.item()
 
+        mean_ep_loss = epoch_loss / train_length
         # Print epoch loss
-        print(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {epoch_loss / train_length:.4f}")
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {mean_ep_loss:.4f}")
 
+        # Save model every 5 epochs
+        if (epoch + 1) % config['logging']['save_every'] == 0:
+            checkpoint_path = os.path.join(config['logging']['log_dir'], f"model_epoch_{epoch + 1}.pt")
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': mean_ep_loss
+            }, checkpoint_path)
+            print(f"Checkpoint saved at {checkpoint_path}")
+
+        # Save best model in terms of training loss
+        if mean_ep_loss < best_loss:
+            best_loss = mean_ep_loss
+            checkpoint_path = os.path.join(config['logging']['log_dir'], f"best_epoch_{epoch + 1}.pt")
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': best_loss
+            }, checkpoint_path)
+            print(f"\nBest model updated at epoch {epoch + 1} with loss {best_loss:.4f}")
 
     # discuss per image, and per head in image
+    # EVAL
     """
         for i in range(images.shape[0]):  # per image
             for j in range(len(bboxes[i])):  # per head

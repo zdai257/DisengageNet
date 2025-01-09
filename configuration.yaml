@@ -1,6 +1,7 @@
 # General Configuration
 model:
   name: "gazelle_dinov2_vitl14_inout"
+  pretrained_path: "gazelle_dinov2_vitl14_inout.pt"
   encoder:
     type: "DINOv2"                  # Pretrained image encoder (DINOv2, CLIP, etc.)
     pretrained: true                # Use pretrained weights
@@ -28,12 +29,13 @@ multi_head_output:
   dropout: 0.2                      # Dropout rate for multi-head outputs
 
 data:
-  train_path: "data/train.json"     # Path to preprocessed training dataset
+  train_path: "./VAT"     # Path to preprocessed training dataset
   train_label: ""
-  test_path: "data/test.json"       # Path to preprocessed test dataset
+  test_path: "./VAT"       # Path to preprocessed test dataset
   test_label: ""
   mean: [0.485, 0.456, 0.406]       # Normalization mean for images (ImageNet values)
   std: [0.229, 0.224, 0.225]        # Normalization std for images (ImageNet values)
+  input_resolution: 448
   augmentations:                    # Data augmentation settings
     horizontal_flip: true
     vertical_flip: false
@@ -49,7 +51,7 @@ train:
   batch_size: 32                    # Batch size for training
   epochs: 50                    # Number of training epochs
   lr: 0.001                         # Base learning rate
-  optimizer: "adamw"                # Optimizer type (adam, adamw, sgd, etc.)
+  optimizer: "AdamW"                # Optimizer type (adam, adamw, sgd, etc.)
   weight_decay: 0.01                # Weight decay for optimizer
   lr_scheduler:                     # Learning rate scheduler settings
     type: "cosine"                  # Scheduler type (cosine, step, exponential, etc.)
@@ -67,13 +69,13 @@ eval:
     - recall
 
 inference:
-  checkpoint: "gazelle_large_vitl14_inout.pt"
+  checkpoint: "gazelle_dinov2_vitl14_inout.pt"
   image_path: "path/to/image.jpg"   # Path to the image for inference
   output_dir: "outputs/inference/" # Directory to save inference results
 
 logging:
-  log_dir: "outputs/logs/"          # Directory to save logs
-  save_interval: 5                  # Interval for saving model checkpoints
+  log_dir: "results/checkpoints/"          # Directory to save logs
+  save_every: 5                  # Interval for saving model checkpoints
 
 hardware:
   device: "cuda:2"                    # Device to use (cuda, cpu)

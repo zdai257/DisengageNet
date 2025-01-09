@@ -20,7 +20,7 @@ def predict(image_path, model, transform, device):
 
 # test feeding
 if __name__ == "__main__":
-    RANDOM_WEIGHT = 1
+    RANDOM_WEIGHT = 0
 
     with open('configuration.yaml', 'r') as f:
         config = yaml.safe_load(f)
