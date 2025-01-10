@@ -2,6 +2,8 @@
 model:
   name: "gazelle_dinov2_vitl14_inout"
   pretrained_path: "gazelle_dinov2_vitl14_inout.pt"
+  bce_weigth: 1.0
+  mse_weigth: 10.0
   encoder:
     type: "DINOv2"                  # Pretrained image encoder (DINOv2, CLIP, etc.)
     pretrained: true                # Use pretrained weights
@@ -49,7 +51,7 @@ data:
 
 train:
   batch_size: 32                    # Batch size for training
-  epochs: 50                    # Number of training epochs
+  epochs: 30                    # Number of training epochs
   lr: 0.001                         # Base learning rate
   optimizer: "AdamW"                # Optimizer type (adam, adamw, sgd, etc.)
   weight_decay: 0.01                # Weight decay for optimizer
@@ -62,7 +64,7 @@ train:
 
 eval:
   checkpoint: "gazelle_large_vitl14_inout.pt"  # Path to the checkpoint for evaluation
-  batch_size: 64                    # Batch size for evaluation
+  batch_size: 32                    # Batch size for evaluation
   metrics:                          # Evaluation metrics
     - accuracy
     - precision
@@ -74,7 +76,7 @@ inference:
   output_dir: "outputs/inference/" # Directory to save inference results
 
 logging:
-  log_dir: "results/checkpoints/"          # Directory to save logs
+  log_dir: "results/checkpoints0/"          # Directory to save logs
   save_every: 5                  # Interval for saving model checkpoints
 
 hardware:

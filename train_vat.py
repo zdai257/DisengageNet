@@ -17,13 +17,6 @@ from network.network_builder import get_gazelle_model, get_gt360_model
 # VAT native data_loader
 #from dataset_builder import VideoAttTarget_video
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--data_path", type=str, default="./data/videoattentiontarget")
-parser.add_argument("--model_name", type=str, default="gazelle_dinov2_vitl14_inout")
-parser.add_argument("--ckpt_path", type=str, default="./checkpoints/gazelle_dinov2_vitl14_inout.pt")
-parser.add_argument("--batch_size", type=int, default=64)
-args = parser.parse_args()
-
 
 class VideoAttentionTarget(torch.utils.data.Dataset):
     def __init__(self, path, img_transform, split='train'):
@@ -86,49 +79,61 @@ def vat_l2(heatmap, gt_gazex, gt_gazey):
     return l2
 
 
-class CustomLoss(torch.nn.Module):
-    def __init__(self, alpha=1.0, beta=1.0):
-        """
-        Custom loss combining BCE loss for classification and MSE loss for regression.
-        Args:
-            alpha (float): Weight for the BCE loss.
-            beta (float): Weight for the MSE loss.
-        """
-        super(CustomLoss, self).__init__()
-        self.bce_loss = torch.nn.BCELoss(reduction='sum')  # Binary Cross-Entropy Loss
-        self.mse_loss = torch.nn.MSELoss(reduce=False, reduction='sum')  # Mean Squared Error Loss
-        self.alpha = alpha  # Weight for BCE
-        self.beta = beta  # Weight for MSE
+@torch.no_grad()
+def evaluate(config, model, val_loader, device):
+    model.eval()
+    batch_size = config['eval']['batch_size']
+    val_bce_loss = torch.nn.BCELoss(reduction='sum')
+    val_mse_loss = torch.nn.MSELoss(reduction='sum')
+    validation_loss = 0.0
+    val_total = len(val_loader)
 
-    def forward(self, classification_pred, classification_target,
-                regression_pred, regression_target):
-        total_bce_loss = 0.0
-        total_mse_loss = 0.0
-        total_items = 0
+    with tqdm(total=val_total) as pbar:
+        for images, bboxes, gazex, gazey, inout in val_loader:
 
-        # Iterate over the batch
-        for cls_pred, cls_target, reg_pred, reg_target in zip(
-                torch.tensor(classification_pred, dtype=torch.float32),
-                torch.tensor(classification_target, dtype=torch.float32),
-                torch.tensor(regression_pred, dtype=torch.float32),
-                torch.tensor(regression_target, dtype=torch.float32)):
-            # Compute BCE loss for this sample (classification)
-            total_bce_loss += self.bce_loss(cls_pred, cls_target)
+            preds = model({"images": images.to(device), "bboxes": bboxes})
 
-            # Compute MSE loss for this sample (regression)
-            total_mse_loss += self.mse_loss(reg_pred, reg_target)
+            # preds = a dict of{'heatmap': list of Batch_size*tensor[head_count, 64, 64],
+            #                   'inout': list of Batch_size*tensor[head_count,] }
 
-            # Accumulate the total number of items for normalization
-            total_items += cls_pred.size(0)
+            classification_preds, regression_preds = [], []
+            for b in range(0, batch_size):
+                head_count = preds['inout'][b].shape[0]
+                inout_list, xy_list = torch.empty((head_count,)), torch.empty((head_count, 2))
+                for head_idx in range(0, head_count):
+                    inout_list[head_idx] = preds['inout'][b][head_idx].clone()
+                    heatmap_tensor = preds['heatmap'][b][head_idx].clone()
+                    # convert pred_heatmap to (x, y) loc
+                    argmax = heatmap_tensor.flatten().argmax().item()
+                    pred_y, pred_x = np.unravel_index(argmax, (64, 64))
+                    pred_x = pred_x / 64.
+                    pred_y = pred_y / 64.
+                    xy_list[head_idx] = torch.tensor([float(pred_x), float(pred_y)])
 
-        # Normalize losses by total items
-        total_bce_loss /= total_items
-        total_mse_loss /= total_items
+                classification_preds.append(inout_list)  # a list of Batch*[heads * <val> ]
+                regression_preds.append(xy_list)  # a list of Batch*[heads * (2,) ]
 
-        # Combine losses with weights
-        total_loss = self.alpha * total_bce_loss + self.beta * total_mse_loss
+            gt_gaze_xy = []
+            for gtxs, gtys in zip(gazex, gazey):
+                heads = len(gtxs)
+                gt_per_img = torch.empty((heads, 2))
+                for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
+                    gt_per_img[i] = torch.tensor([gtx[0], gty[0]], dtype=torch.float32)
+                gt_gaze_xy.append(gt_per_img)
 
-        return total_loss
+            gt_inout = []
+            for i in range(len(inout)):
+                gt_inout.append(torch.tensor(inout[i], dtype=torch.float32))
+
+            total_bce_loss = val_bce_loss(torch.cat(classification_preds, dim=0), torch.cat(gt_inout, dim=0))
+            total_mse_loss = val_mse_loss(torch.cat(regression_preds, dim=0), torch.cat(gt_gaze_xy, dim=0))
+
+            total_loss = config['model']['bce_weight'] * total_bce_loss + config['model']['mse_weight'] * total_mse_loss
+            validation_loss += total_loss.item()
+
+            pbar.update(1)
+
+    return float(validation_loss / val_total)
 
 
 def main():
@@ -233,6 +238,7 @@ def main():
     for epoch in range(config['train']['epochs']):
         model.train(True)
         epoch_loss = 0.
+        total_loss = None
 
         for batch, (images, bboxes, gazex, gazey, inout) in tqdm(enumerate(train_loader), total=len(train_loader)):
 
@@ -282,10 +288,10 @@ def main():
                     gt_per_img[i] = torch.tensor([gtx[0], gty[0]], dtype=torch.float32)
                 gt_gaze_xy.append(gt_per_img)
 
-            print(len(gt_gaze_xy), gt_gaze_xy[0])
-            print(len(regression_preds), regression_preds[0])
-            print(len(classification_preds), classification_preds[0])
-            print(len(inout), inout[0])
+            #print(len(gt_gaze_xy), gt_gaze_xy[0])
+            #print(len(regression_preds), regression_preds[0])
+            #print(len(classification_preds), classification_preds[0])
+            #print(len(inout), inout[0])
             gt_inout = []
             for i in range(len(inout)):
                 gt_inout.append(torch.tensor(inout[i], dtype=torch.float32))
@@ -306,9 +312,15 @@ def main():
             # Accumulate loss for reporting
             epoch_loss += total_loss.item()
 
+        scheduler.step()
+
         mean_ep_loss = epoch_loss / train_length
         # Print epoch loss
-        print(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {mean_ep_loss:.4f}")
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {mean_ep_loss:.4f}")
+
+        val_loss = evaluate(config, model, test_loader, device)
+
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Validation Loss: {val_loss:.4f}")
 
         # Save model every 5 epochs
         if (epoch + 1) % config['logging']['save_every'] == 0:
@@ -317,24 +329,26 @@ def main():
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'loss': mean_ep_loss
+                'scheduler': scheduler.state_dict(),
+                'loss': val_loss
             }, checkpoint_path)
             print(f"Checkpoint saved at {checkpoint_path}")
 
-        # Save best model in terms of training loss
-        if mean_ep_loss < best_loss:
-            best_loss = mean_ep_loss
+        # Save best model based on VAL_LOSS
+        if val_loss < best_loss:
+            best_loss = val_loss
             checkpoint_path = os.path.join(config['logging']['log_dir'], f"best_epoch_{epoch + 1}.pt")
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
                 'loss': best_loss
             }, checkpoint_path)
             print(f"\nBest model updated at epoch {epoch + 1} with loss {best_loss:.4f}")
 
     # discuss per image, and per head in image
-    # EVAL
+    # Test on metrics
     """
         for i in range(images.shape[0]):  # per image
             for j in range(len(bboxes[i])):  # per head
