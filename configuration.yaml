@@ -3,7 +3,7 @@ model:
   name: "gazelle_dinov2_vitl14_inout"
   pretrained_path: "gazelle_dinov2_vitl14_inout.pt"
   bce_weight: 1.0
-  mse_weight: 10.0
+  mse_weight: 2.0
   encoder:
     type: "DINOv2"                  # Pretrained image encoder (DINOv2, CLIP, etc.)
     pretrained: true                # Use pretrained weights
@@ -51,7 +51,7 @@ data:
 
 train:
   batch_size: 32                    # Batch size for training
-  epochs: 30                    # Number of training epochs
+  epochs: 50                    # Number of training epochs
   lr: 0.001                         # Base learning rate
   optimizer: "AdamW"                # Optimizer type (adam, adamw, sgd, etc.)
   weight_decay: 0.01                # Weight decay for optimizer

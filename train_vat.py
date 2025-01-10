@@ -97,7 +97,7 @@ def evaluate(config, model, val_loader, device):
             #                   'inout': list of Batch_size*tensor[head_count,] }
 
             classification_preds, regression_preds = [], []
-            for b in range(0, batch_size):
+            for b in range(0, images.shape[0]):
                 head_count = preds['inout'][b].shape[0]
                 inout_list, xy_list = torch.empty((head_count,)), torch.empty((head_count, 2))
                 for head_idx in range(0, head_count):
@@ -178,7 +178,7 @@ def main():
 
     model.to(device)
 
-    # optim
+    # TODO: different lr for inout head, and other params
     if config['train']['optimizer'] == 'Adam':
         #optimizer = Adam(model.parameters(), lr=lr)
         optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
@@ -300,6 +300,8 @@ def main():
             # Compute BCE loss for this sample (classification)
             total_bce_loss = bce_loss(torch.cat(classification_preds, dim=0), torch.cat(gt_inout, dim=0))
             total_mse_loss = mse_loss(torch.cat(regression_preds, dim=0), torch.cat(gt_gaze_xy, dim=0))
+
+            #TODO: hide MSE lose when out-of-frame
 
             total_loss = config['model']['bce_weight'] * total_bce_loss + config['model']['mse_weight'] * total_mse_loss
         
