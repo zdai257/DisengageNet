@@ -100,7 +100,7 @@ class CustomLoss(torch.nn.Module):
         self.alpha = alpha  # Weight for BCE
         self.beta = beta  # Weight for MSE
 
-    def forward(self, classification_pred, classification_target, 
+    def forward(self, classification_pred, classification_target,
                 regression_pred, regression_target):
         total_bce_loss = 0.0
         total_mse_loss = 0.0
@@ -166,7 +166,8 @@ def main():
 
     # Verify the freezing and initialization
     for name, param in model.named_parameters():
-        print(f"{name}: requires_grad={param.requires_grad}")
+        #print(f"{name}: requires_grad={param.requires_grad}")
+        pass
 
     #exit()
 
@@ -211,7 +212,6 @@ def main():
 
     train_length = train_dataset.__len__()
 
-    # LOSS
     loss_fn = CustomLoss(alpha=1.0, beta=1.0)
 
     # save dir for checkpoints
@@ -236,13 +236,13 @@ def main():
         for batch, (images, bboxes, gazex, gazey, inout) in tqdm(enumerate(train_loader), total=len(train_loader)):
 
             # freeze batchnorm layers
-            for module in model.modules():
-                if isinstance(module, torch.nn.modules.BatchNorm1d):
-                    module.eval()
-                if isinstance(module, torch.nn.modules.BatchNorm2d):
-                    module.eval()
-                if isinstance(module, torch.nn.modules.BatchNorm3d):
-                    module.eval()
+            #for module in model.modules():
+            #    if isinstance(module, torch.nn.modules.BatchNorm1d):
+            #        module.eval()
+            #    if isinstance(module, torch.nn.modules.BatchNorm2d):
+            #        module.eval()
+            #    if isinstance(module, torch.nn.modules.BatchNorm3d):
+            #        module.eval()
             
             # forward pass
             preds = model({"images": images.to(device), "bboxes": bboxes})
@@ -269,7 +269,8 @@ def main():
                 classification_preds.append(inout_list)  # a list of Batch*[heads * <val> ]
                 regression_preds.append(xy_list)  # a list of Batch*[heads * (2,) ]
 
-            #
+
+
             #print(len(preds['heatmap']), preds['heatmap'][0].shape)
             #print(len(preds['inout']), preds['inout'][0].shape)
             # GT = a list of Batch*[head_count*[pixel_norm ] ]
@@ -292,9 +293,10 @@ def main():
             loss = loss_fn(classification_preds, inout, regression_preds, gt_gaze_xy)
         
             # Backpropagation and optimization
-            optimizer.zero_grad()
+
             loss.backward()
             optimizer.step()
+            optimizer.zero_grad()
             # Accumulate loss for reporting
             epoch_loss += loss.item()
 
