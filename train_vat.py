@@ -286,11 +286,14 @@ def main():
             print(len(regression_preds), regression_preds[0])
             print(len(classification_preds), classification_preds[0])
             print(len(inout), inout[0])
+            gt_inout = []
+            for i in range(len(inout)):
+                gt_inout.append(torch.tensor(inout[i], dtype=torch.float32))
 
             # TODO: Compute total loss all using Tensors
             # Iterate over the batch
             # Compute BCE loss for this sample (classification)
-            total_bce_loss = bce_loss(torch.cat(classification_preds, dim=0), torch.tensor(inout, dtype=torch.float32))
+            total_bce_loss = bce_loss(torch.cat(classification_preds, dim=0), torch.cat(gt_inout, dim=0))
             total_mse_loss = mse_loss(torch.cat(regression_preds, dim=0), torch.cat(gt_gaze_xy, dim=0))
 
             total_loss = 1. * total_bce_loss + 10. * total_mse_loss
