@@ -212,7 +212,8 @@ def main():
 
     train_length = train_dataset.__len__()
 
-    loss_fn = CustomLoss(alpha=1.0, beta=1.0)
+    bce_loss = torch.nn.BCELoss(reduction='sum')  # Binary Cross-Entropy Loss
+    mse_loss = torch.nn.MSELoss(reduction='sum')  # Mean Squared Error Loss
 
     # save dir for checkpoints
     os.makedirs(config['logging']['log_dir'], exist_ok=True)
@@ -251,25 +252,21 @@ def main():
             #                   'inout': list of Batch_size*tensor[head_count,] }
 
             classification_preds, regression_preds = [], []
-
-            inout_tensor = None
-            pred_x, pred_y = None, None
             for b in range(0, batch_size):
-                inout_list, xy_list = [], []
-                for head_idx in range(0, preds['inout'][b].shape[0]):
-                    inout_list.append(preds['inout'][b][head_idx].clone().cpu())
+                head_count = preds['inout'][b].shape[0]
+                inout_list, xy_list = torch.empty((head_count,)), torch.empty((head_count, 2))
+                for head_idx in range(0, head_count):
+                    inout_list[head_idx] = preds['inout'][b][head_idx].clone()
                     heatmap_tensor = preds['heatmap'][b][head_idx].clone()
                     # convert pred_heatmap to (x, y) loc
                     argmax = heatmap_tensor.flatten().argmax().item()
                     pred_y, pred_x = np.unravel_index(argmax, (64, 64))
                     pred_x = pred_x / 64.
                     pred_y = pred_y / 64.
-                    xy_list.append((float(pred_x), float(pred_y)))
+                    xy_list[head_idx] = torch.tensor([float(pred_x), float(pred_y)])
 
                 classification_preds.append(inout_list)  # a list of Batch*[heads * <val> ]
                 regression_preds.append(xy_list)  # a list of Batch*[heads * (2,) ]
-
-
 
             #print(len(preds['heatmap']), preds['heatmap'][0].shape)
             #print(len(preds['inout']), preds['inout'][0].shape)
@@ -279,9 +276,10 @@ def main():
 
             gt_gaze_xy = []
             for gtxs, gtys in zip(gazex, gazey):
-                gt_per_img = []
-                for gtx, gty in zip(gtxs, gtys):
-                    gt_per_img.append((gtx[0], gty[0]))
+                heads = len(gtxs)
+                gt_per_img = torch.empty((heads, 2))
+                for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
+                    gt_per_img[i] = torch.tensor([gtx[0], gty[0]], dtype=torch.float32)
                 gt_gaze_xy.append(gt_per_img)
 
             print(len(gt_gaze_xy), gt_gaze_xy[0])
@@ -289,16 +287,21 @@ def main():
             print(len(classification_preds), classification_preds[0])
             print(len(inout), inout[0])
 
-            # TODO: Compute total loss
-            loss = loss_fn(classification_preds, inout, regression_preds, gt_gaze_xy)
+            # TODO: Compute total loss all using Tensors
+            # Iterate over the batch
+            # Compute BCE loss for this sample (classification)
+            total_bce_loss = bce_loss(torch.cat(classification_preds, dim=0), torch.tensor(inout, dtype=torch.float32))
+            total_mse_loss = mse_loss(torch.cat(regression_preds, dim=0), torch.cat(gt_gaze_xy, dim=0))
+
+            total_loss = 1. * total_bce_loss + 10. * total_mse_loss
         
             # Backpropagation and optimization
-            loss.requires_grad = True
-            loss.backward()
-            optimizer.step()
             optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
+
             # Accumulate loss for reporting
-            epoch_loss += loss.item()
+            epoch_loss += total_loss.item()
 
         mean_ep_loss = epoch_loss / train_length
         # Print epoch loss
