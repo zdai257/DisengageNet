@@ -257,8 +257,8 @@ def main():
             for b in range(0, batch_size):
                 inout_list, xy_list = [], []
                 for head_idx in range(0, preds['inout'][b].shape[0]):
-                    inout_list.append(preds['inout'][b][head_idx].cpu())
-                    heatmap_tensor = preds['heatmap'][b][head_idx]
+                    inout_list.append(preds['inout'][b][head_idx].clone().cpu())
+                    heatmap_tensor = preds['heatmap'][b][head_idx].clone()
                     # convert pred_heatmap to (x, y) loc
                     argmax = heatmap_tensor.flatten().argmax().item()
                     pred_y, pred_x = np.unravel_index(argmax, (64, 64))
