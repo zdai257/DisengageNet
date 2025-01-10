@@ -258,7 +258,7 @@ def main():
             #                   'inout': list of Batch_size*tensor[head_count,] }
 
             classification_preds, regression_preds = [], []
-            for b in range(0, batch_size):
+            for b in range(0, images.shape[0]):
                 head_count = preds['inout'][b].shape[0]
                 inout_list, xy_list = torch.empty((head_count,)), torch.empty((head_count, 2))
                 for head_idx in range(0, head_count):
@@ -296,13 +296,12 @@ def main():
             for i in range(len(inout)):
                 gt_inout.append(torch.tensor(inout[i], dtype=torch.float32))
 
-            # TODO: Compute total loss all using Tensors
             # Iterate over the batch
             # Compute BCE loss for this sample (classification)
             total_bce_loss = bce_loss(torch.cat(classification_preds, dim=0), torch.cat(gt_inout, dim=0))
             total_mse_loss = mse_loss(torch.cat(regression_preds, dim=0), torch.cat(gt_gaze_xy, dim=0))
 
-            total_loss = 1. * total_bce_loss + 10. * total_mse_loss
+            total_loss = config['model']['bce_weight'] * total_bce_loss + config['model']['mse_weight'] * total_mse_loss
         
             # Backpropagation and optimization
             optimizer.zero_grad()

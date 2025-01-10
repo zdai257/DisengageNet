@@ -2,8 +2,8 @@
 model:
   name: "gazelle_dinov2_vitl14_inout"
   pretrained_path: "gazelle_dinov2_vitl14_inout.pt"
-  bce_weigth: 1.0
-  mse_weigth: 10.0
+  bce_weight: 1.0
+  mse_weight: 10.0
   encoder:
     type: "DINOv2"                  # Pretrained image encoder (DINOv2, CLIP, etc.)
     pretrained: true                # Use pretrained weights
