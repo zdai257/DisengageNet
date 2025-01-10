@@ -293,7 +293,7 @@ def main():
             loss = loss_fn(classification_preds, inout, regression_preds, gt_gaze_xy)
         
             # Backpropagation and optimization
-
+            loss.requires_grad = True
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
