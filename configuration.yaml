@@ -51,8 +51,9 @@ data:
 
 train:
   batch_size: 32                    # Batch size for training
-  epochs: 50                    # Number of training epochs
+  epochs: 30                    # Number of training epochs
   lr: 0.001                         # Base learning rate
+  inout_lr: 0.01
   optimizer: "AdamW"                # Optimizer type (adam, adamw, sgd, etc.)
   weight_decay: 0.01                # Weight decay for optimizer
   lr_scheduler:                     # Learning rate scheduler settings
@@ -81,5 +82,5 @@ logging:
 
 hardware:
   device: "cuda:2"                    # Device to use (cuda, cpu)
-  num_workers: 4                    # Number of data loader workers
-  pin_memory: true                  # Pin memory for faster data loading
+  num_workers: 3                    # Number of data loader workers
+  pin_memory: True                  # Pin memory for faster data loading

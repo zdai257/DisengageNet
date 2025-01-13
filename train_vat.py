@@ -178,20 +178,34 @@ def main():
 
     model.to(device)
 
-    # TODO: different lr for inout head, and other params
+    n_parameters = sum(p.numel()
+                       for p in model.parameters() if p.requires_grad)
+    print(f"Number of params: {n_parameters}")
+
+    # set lr differently
+    param_dicts = []
+    for n, p in model.named_parameters():
+        if p.requires_grad and "inout" not in n:
+            param_dicts.append({'params': p, 'lr': config['train']['lr']})
+        if p.requires_grad and "inout" in n:
+            param_dicts.append({'params': p, 'lr': config['train']['inout_lr']})
+
     if config['train']['optimizer'] == 'Adam':
-        #optimizer = Adam(model.parameters(), lr=lr)
-        optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
+        optimizer = Adam(param_dicts)
     elif config['train']['optimizer'] == 'AdamW':
-        #optimizer = AdamW(model.parameters(), lr=lr)
-        optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
+        optimizer = AdamW(param_dicts)
     else:
         raise TypeError("Optimizer not supported!")
 
     # linear learning rate scheduler
     lr_step_size = config['train']['lr_scheduler']['step_size']
     gamma = config['train']['lr_scheduler']['gamma']  # Factor by which the learning rate will be reduced
-    scheduler = StepLR(optimizer, step_size=lr_step_size, gamma=gamma)
+    if config['train']['lr_scheduler']['type'] == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
+                                                               T_max=100,
+                                                               eta_min=config['train']['lr_scheduler']['min_lr'])
+    else: # linear lr scheduler
+        scheduler = StepLR(optimizer, step_size=lr_step_size, gamma=gamma)
 
     input_resolution = config['data']['input_resolution']
 
@@ -211,8 +225,22 @@ def main():
                                         img_transform=my_transform,
                                         split='test')
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=config['train']['batch_size'], collate_fn=collate)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=config['eval']['batch_size'], collate_fn=collate)
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=config['train']['batch_size'],
+        collate_fn=collate,
+        #shuffle=True,
+        num_workers=config['hardware']['num_workers'],
+        pin_memory=config['hardware']['pin_memory']
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=config['eval']['batch_size'],
+        collate_fn=collate,
+        # shuffle=True,
+        num_workers=config['hardware']['num_workers'],
+        pin_memory=config['hardware']['pin_memory']
+    )
     # val_loader?
 
     train_length = train_dataset.__len__()

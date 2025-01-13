@@ -19,6 +19,8 @@ if __name__ == "__main__":
 
     accuracy = 0
     total = 0
+
+    # TODO: eval best.models
     with torch.no_grad():
         for images, labels in test_loader:
             images, labels = images.to(device), labels.to(device)
