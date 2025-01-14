@@ -1,32 +1,121 @@
 import os
 from os.path import join
+import numpy as np
 import torch
-from utils.dataset_builder import get_dataset_and_loader
-from network.network_builder import build_model
+from torchvision import transforms
+from torchvision.transforms import Compose, ToTensor
+from PIL import Image
+from torchvision.transforms import Compose, ToTensor, Normalize
+from network.network_builder import get_gazelle_model
+from tqdm import tqdm
 import yaml
+from sklearn.metrics import roc_auc_score, average_precision_score
+
+from train_vat import VideoAttentionTarget, collate
+
+
+# VideoAttentionTarget calculates AUC on 64x64 heatmap, defining a rectangular tolerance region of 6*(sigma=3) + 1 (uses 2D Gaussian code but binary thresholds > 0 resulting in rectangle)
+# References:
+# https://github.com/ejcgt/attention-target-detection/blob/acd264a3c9e6002b71244dea8c1873e5c5818500/eval_on_videoatttarget.py#L106
+# https://github.com/ejcgt/attention-target-detection/blob/acd264a3c9e6002b71244dea8c1873e5c5818500/utils/imutils.py#L31
+def vat_auc(heatmap, gt_gazex, gt_gazey):
+    res = 64
+    sigma = 3
+    assert heatmap.shape[0] == res and heatmap.shape[1] == res
+    target_map = np.zeros((res, res))
+    gazex = gt_gazex * res
+    gazey = gt_gazey * res
+    ul = [max(0, int(gazex - 3 * sigma)), max(0, int(gazey - 3 * sigma))]
+    br = [min(int(gazex + 3 * sigma + 1), res - 1), min(int(gazey + 3 * sigma + 1), res - 1)]
+    target_map[ul[1]:br[1], ul[0]:br[0]] = 1
+    auc = roc_auc_score(target_map.flatten(), heatmap.cpu().flatten())
+    return auc
+
+
+# Reference: https://github.com/ejcgt/attention-target-detection/blob/acd264a3c9e6002b71244dea8c1873e5c5818500/eval_on_videoatttarget.py#L118
+def vat_l2(heatmap, gt_gazex, gt_gazey):
+    argmax = heatmap.flatten().argmax().item()
+    pred_y, pred_x = np.unravel_index(argmax, (64, 64))
+    pred_x = pred_x / 64.
+    pred_y = pred_y / 64.
+
+    l2 = np.sqrt((pred_x - gt_gazex) ** 2 + (pred_y - gt_gazey) ** 2)
+
+    return l2
+
+
+@torch.no_grad()
+def eval_metrics(config, model, test_loader, device):
+
+    aucs = []
+    l2s = []
+    inout_preds = []
+    inout_gts = []
+
+    for _, (images, bboxes, gazex, gazey, inout) in tqdm(enumerate(test_loader), desc="Evaluating",
+                                                         total=len(test_loader)):
+        preds = model.forward({"images": images.to(device), "bboxes": bboxes})
+
+        # eval each instance (head)
+        for i in range(images.shape[0]):  # per image
+            for j in range(len(bboxes[i])):  # per head
+                if inout[i][j] == 1:  # in frame
+                    auc = vat_auc(preds['heatmap'][i][j], gazex[i][j][0], gazey[i][j][0])
+                    l2 = vat_l2(preds['heatmap'][i][j], gazex[i][j][0], gazey[i][j][0])
+                    aucs.append(auc)
+                    l2s.append(l2)
+                inout_preds.append(preds['inout'][i][j].item())
+                inout_gts.append(inout[i][j])
+
+    AUC = np.array(aucs).mean()
+    L2_mean = np.array(l2s).mean()
+    AP = average_precision_score(inout_gts, inout_preds)
+    print("AUC: {}".format(AUC))
+    print("Avg L2: {}".format(L2_mean))
+    print("Inout AP: {}".format(AP))
+
+    return AUC, L2_mean, AP
 
 
 if __name__ == "__main__":
-    with open('configs/config.yaml', 'r') as f:
+    with open('configuration.yaml', 'r') as f:
         config = yaml.safe_load(f)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = build_model(config['model'])
-    model.load_state_dict(torch.load(config['eval']['checkpoint']))
-    model.to(device).eval()
+    device = torch.device(config['hardware']['device'] if torch.cuda.is_available() else 'cpu')
+    batch_size = config['eval']['batch_size']
 
-    _, test_loader = get_dataset_and_loader(config['data']['test_path'], config, train=False)
+    # transform
+    input_resolution = config['data']['input_resolution']
+    transform_list = []
+    transform_list.append(transforms.Resize((input_resolution, input_resolution)))
+    transform_list.append(transforms.ToTensor())
+    transform_list.append(transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
+    my_transform = transforms.Compose(transform_list)
+    test_dataset = VideoAttentionTarget(path=config['data']['test_path'],
+                                        img_transform=my_transform,
+                                        split='test')
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=config['eval']['batch_size'],
+        collate_fn=collate,
+        # shuffle=True,
+        num_workers=config['hardware']['num_workers'],
+        pin_memory=config['hardware']['pin_memory']
+    )
 
-    accuracy = 0
-    total = 0
+    model, gazelle_transform = get_gazelle_model(config)
 
-    # TODO: eval best.models
-    with torch.no_grad():
-        for images, labels in test_loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            _, predicted = torch.max(outputs, 1)
-            accuracy += (predicted == labels).sum().item()
-            total += labels.size(0)
+    # load Best model in a trial log_dir
+    try:
+        for file in os.listdir(config['logging']['log_dir']):
+            if file.startswith('Best') and file.endswith('.pt'):
+                best_checkpoint = os.path.join(config['logging']['log_dir'], file)
+                break
+    except:
+        raise TypeError("Did not find 'Best' checkpoint!")
 
-    print(f"Accuracy: {accuracy / total * 100:.2f}%")
+    model_state_dict = best_checkpoint['model_state_dict']
+    model.load_state_dict(model_state_dict)
+
+    auc, l2, ap = eval_metrics(config, model, test_loader, device)
+

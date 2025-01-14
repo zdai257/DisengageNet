@@ -9,11 +9,11 @@ from PIL import Image
 import json
 import os
 import numpy as np
-from sklearn.metrics import roc_auc_score, average_precision_score
 from tqdm import tqdm
 import yaml
 
 from network.network_builder import get_gazelle_model, get_gt360_model
+from eval import eval_metrics
 # VAT native data_loader
 #from dataset_builder import VideoAttTarget_video
 
@@ -47,36 +47,6 @@ class VideoAttentionTarget(torch.utils.data.Dataset):
 def collate(batch):
     images, bboxes, gazex, gazey, inout = zip(*batch)
     return torch.stack(images), list(bboxes), list(gazex), list(gazey), list(inout)
-
-
-# VideoAttentionTarget calculates AUC on 64x64 heatmap, defining a rectangular tolerance region of 6*(sigma=3) + 1 (uses 2D Gaussian code but binary thresholds > 0 resulting in rectangle)
-# References:
-# https://github.com/ejcgt/attention-target-detection/blob/acd264a3c9e6002b71244dea8c1873e5c5818500/eval_on_videoatttarget.py#L106
-# https://github.com/ejcgt/attention-target-detection/blob/acd264a3c9e6002b71244dea8c1873e5c5818500/utils/imutils.py#L31
-def vat_auc(heatmap, gt_gazex, gt_gazey):
-    res = 64
-    sigma = 3
-    assert heatmap.shape[0] == res and heatmap.shape[1] == res
-    target_map = np.zeros((res, res))
-    gazex = gt_gazex * res
-    gazey = gt_gazey * res
-    ul = [max(0, int(gazex - 3 * sigma)), max(0, int(gazey - 3 * sigma))]
-    br = [min(int(gazex + 3 * sigma + 1), res - 1), min(int(gazey + 3 * sigma + 1), res - 1)]
-    target_map[ul[1]:br[1], ul[0]:br[0]] = 1
-    auc = roc_auc_score(target_map.flatten(), heatmap.cpu().flatten())
-    return auc
-
-
-# Reference: https://github.com/ejcgt/attention-target-detection/blob/acd264a3c9e6002b71244dea8c1873e5c5818500/eval_on_videoatttarget.py#L118
-def vat_l2(heatmap, gt_gazex, gt_gazey):
-    argmax = heatmap.flatten().argmax().item()
-    pred_y, pred_x = np.unravel_index(argmax, (64, 64))
-    pred_x = pred_x / 64.
-    pred_y = pred_y / 64.
-
-    l2 = np.sqrt((pred_x - gt_gazex) ** 2 + (pred_y - gt_gazey) ** 2)
-
-    return l2
 
 
 @torch.no_grad()
@@ -202,8 +172,8 @@ def main():
     gamma = config['train']['lr_scheduler']['gamma']  # Factor by which the learning rate will be reduced
     if config['train']['lr_scheduler']['type'] == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
-                                                               T_max=100,
-                                                               eta_min=config['train']['lr_scheduler']['min_lr'])
+                                                               T_max=100)
+                                                               #eta_min=config['train']['lr_scheduler']['min_lr'])
     else: # linear lr scheduler
         scheduler = StepLR(optimizer, step_size=lr_step_size, gamma=gamma)
 
@@ -253,13 +223,7 @@ def main():
 
     best_loss = float('inf')
     early_stop_count = 0
-
-    # eval metrics
-    aucs = []
-    l2s = []
-    inout_preds = []
-    inout_gts = []
-
+    best_checkpoint_path = None
     batch_size = config['train']['batch_size']
 
     # START TRAINING
@@ -367,6 +331,7 @@ def main():
         if val_loss < best_loss:
             best_loss = val_loss
             checkpoint_path = os.path.join(config['logging']['log_dir'], f"best_epoch_{epoch + 1}.pt")
+            best_checkpoint_path = checkpoint_path
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
@@ -376,23 +341,27 @@ def main():
             }, checkpoint_path)
             print(f"\nBest model updated at epoch {epoch + 1} with loss {best_loss:.4f}")
 
-    # discuss per image, and per head in image
-    # Test on metrics
-    """
-        for i in range(images.shape[0]):  # per image
-            for j in range(len(bboxes[i])):  # per head
-                if inout[i][j] == 1:  # in frame
-                    auc = vat_auc(preds['heatmap'][i][j], gazex[i][j][0], gazey[i][j][0])
-                    l2 = vat_l2(preds['heatmap'][i][j], gazex[i][j][0], gazey[i][j][0])
-                    aucs.append(auc)
-                    l2s.append(l2)
-                inout_preds.append(preds['inout'][i][j].item())
-                inout_gts.append(inout[i][j])
+    # Quantitative Eval: discuss per image, and per head in image
+    # Test best.model on metrics
+    checkpoint = torch.load(best_checkpoint_path)
+    model_state_dict = checkpoint['model_state_dict']
+    bst_ep = checkpoint['epoch']
+    bst_loss = checkpoint['loss']
 
-    print("AUC: {}".format(np.array(aucs).mean()))
-    print("Avg L2: {}".format(np.array(l2s).mean()))
-    print("Inout AP: {}".format(average_precision_score(inout_gts, inout_preds)))
-    """
+    with torch.no_grad():
+        model.load_state_dict(model_state_dict)
+
+        auc, l2, ap = eval_metrics(config, model, test_loader, device)
+
+        best_checkpoint = os.path.join(config['logging']['log_dir'],
+                                       f"Best_model_ep{bst_ep}_l2{int(l2*100)}_ap{int(ap*100)}.pt")
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'loss': bst_loss,
+            'auc': auc,
+            'l2': l2,
+            'ap': ap
+        }, best_checkpoint)
 
 
 if __name__ == "__main__":
