@@ -11,8 +11,6 @@ from tqdm import tqdm
 import yaml
 from sklearn.metrics import roc_auc_score, average_precision_score
 
-from train_vat import VideoAttentionTarget, collate
-
 
 # VideoAttentionTarget calculates AUC on 64x64 heatmap, defining a rectangular tolerance region of 6*(sigma=3) + 1 (uses 2D Gaussian code but binary thresholds > 0 resulting in rectangle)
 # References:
@@ -75,47 +73,4 @@ def eval_metrics(config, model, test_loader, device):
     print("Inout AP: {}".format(AP))
 
     return AUC, L2_mean, AP
-
-
-if __name__ == "__main__":
-    with open('configuration.yaml', 'r') as f:
-        config = yaml.safe_load(f)
-
-    device = torch.device(config['hardware']['device'] if torch.cuda.is_available() else 'cpu')
-    batch_size = config['eval']['batch_size']
-
-    # transform
-    input_resolution = config['data']['input_resolution']
-    transform_list = []
-    transform_list.append(transforms.Resize((input_resolution, input_resolution)))
-    transform_list.append(transforms.ToTensor())
-    transform_list.append(transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
-    my_transform = transforms.Compose(transform_list)
-    test_dataset = VideoAttentionTarget(path=config['data']['test_path'],
-                                        img_transform=my_transform,
-                                        split='test')
-    test_loader = torch.utils.data.DataLoader(
-        test_dataset,
-        batch_size=config['eval']['batch_size'],
-        collate_fn=collate,
-        # shuffle=True,
-        num_workers=config['hardware']['num_workers'],
-        pin_memory=config['hardware']['pin_memory']
-    )
-
-    model, gazelle_transform = get_gazelle_model(config)
-
-    # load Best model in a trial log_dir
-    try:
-        for file in os.listdir(config['logging']['log_dir']):
-            if file.startswith('Best') and file.endswith('.pt'):
-                best_checkpoint = os.path.join(config['logging']['log_dir'], file)
-                break
-    except:
-        raise TypeError("Did not find 'Best' checkpoint!")
-
-    model_state_dict = best_checkpoint['model_state_dict']
-    model.load_state_dict(model_state_dict)
-
-    auc, l2, ap = eval_metrics(config, model, test_loader, device)
 
