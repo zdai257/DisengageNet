@@ -291,9 +291,13 @@ def main():
             # Iterate over the batch
             # Compute BCE loss for this sample (classification)
             total_bce_loss = bce_loss(torch.cat(classification_preds, dim=0), torch.cat(gt_inout, dim=0))
-            total_mse_loss = mse_loss(torch.cat(regression_preds, dim=0), torch.cat(gt_gaze_xy, dim=0))
 
-            #TODO: hide MSE lose when out-of-frame
+            # hide MSE lose when out-of-frame
+            inout_mask = (gt_inout == 1).float()
+
+            total_mse_loss = mse_loss(torch.cat(regression_preds, dim=0), torch.cat(gt_gaze_xy, dim=0))
+            total_mse_loss = total_mse_loss * inout_mask.squeeze()
+
 
             total_loss = config['model']['bce_weight'] * total_bce_loss + config['model']['mse_weight'] * total_mse_loss
         
