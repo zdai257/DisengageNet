@@ -66,6 +66,7 @@ class ColumbiaGazeDataset(Dataset):
                     filename, _ = os.path.splitext(file)  # Remove extension
                     labels = filename.split('_')  # Split by '_'
                     # e.g. "0003_2m_-30P_10V_-10H.jpg": five head Poses, three Vertical gaze angles, seven Horizontal gaze angles
+                    # Headpose appears to be independent from V / H, if V=0 & H=0: EC = True
                     headpose = int(labels[2][:-1])
                     vertical = int(labels[3][:-1])
                     horizontal = int(labels[4][:-1])
@@ -74,28 +75,29 @@ class ColumbiaGazeDataset(Dataset):
                     v_unit = 2 * math.tan(math.radians(10))
                     #h_unit = 2 * math.tan(math.radians(5))
                     if vertical == 0:
-                        if headpose == horizontal:
+                        if horizontal == 0:
                             ec = 1
-                        elif headpose < horizontal:
+                        elif horizontal > 0:
                             gaze_vector = (1., 0.)
                         else:
                             gaze_vector = (-1., 0.)
                     elif vertical == 10:
-                        if headpose == horizontal:
+                        if horizontal == 0:
                             gaze_vector = (0., 1.)
                         else:
-                            # TODO: geometry correct?!
-                            gaze_vector = (2*math.tan(math.radians(horizontal - headpose)), v_unit)
+                            # gaze_vector = ( 2*tan(H), 2*tan(10) )
+                            gaze_vector = (2 * math.tan(math.radians(horizontal)), v_unit)
                             magnitude = np.linalg.norm(np.array(gaze_vector))
                             gaze_vector = (gaze_vector[0]/magnitude, gaze_vector[1]/magnitude)
                     elif vertical == -10:
-                        if headpose == horizontal:
+                        if horizontal == 0:
                             gaze_vector = (0., -1.)
                         else:
-                            # TODO: geometry correct?!
-                            gaze_vector = (2*math.tan(math.radians(horizontal - headpose)), -v_unit)
+                            # gaze_vector = ( 2*tan(H), -2*tan(10) )
+                            gaze_vector = (2 * math.tan(math.radians(horizontal)), -v_unit)
                             magnitude = np.linalg.norm(np.array(gaze_vector))
                             gaze_vector = (gaze_vector[0] / magnitude, gaze_vector[1] / magnitude)
+
                     self.gaze_data.append((full_path, gaze_vector, ec))
 
     def __len__(self):

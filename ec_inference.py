@@ -1,5 +1,6 @@
 import os
 from os.path import join
+import sys
 import yaml
 import torch
 import torch.nn.functional as F
@@ -15,6 +16,13 @@ from network.ec_network_builder import get_ec_model
 
 CNN_FACE_MODEL = 'model/mmod_human_face_detector.dat'  # from http://dlib.net/files/mmod_human_face_detector.dat.bz2
 MODEL_WEIGHTS = 'model/model_weights.pkl'
+
+script_path = os.path.abspath(__file__)
+script_dir = os.path.dirname(script_path)
+PREDICTOR_PATH = os.path.join(script_dir, "model", "shape_predictor_68_face_landmarks.dat")
+if not os.path.isfile(PREDICTOR_PATH):
+    print("[ERROR] USE models/downloader.sh to download the predictor")
+    sys.exit()
 
 
 def bbox_jitter(bbox_left, bbox_top, bbox_right, bbox_bottom):
@@ -34,7 +42,7 @@ def drawrect(drawcontext, xy, outline=None, width=0):
     drawcontext.line(points, fill=outline, width=width)
 
 
-def main(facemode='DBLIB', pretrained=True, jitter=0):
+def main(facemode='DLIB', pretrained=True, jitter=0):
 
     # Load config file
     with open('configuration.yaml', 'r') as file:
@@ -47,6 +55,10 @@ def main(facemode='DBLIB', pretrained=True, jitter=0):
 
     #if facemode == 'DLIB':
     cnn_face_detector = dlib.cnn_face_detection_model_v1(CNN_FACE_MODEL)
+    # alternative dlib face-detector
+    detector = dlib.get_frontal_face_detector()
+    predictor = dlib.shape_predictor(PREDICTOR_PATH)
+
     frame_cnt = 0
 
     test_transforms = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(),
@@ -60,13 +72,12 @@ def main(facemode='DBLIB', pretrained=True, jitter=0):
     with open(MODEL_WEIGHTS, 'rb') as f:
         loaded = pickle.load(f)
 
-    print(loaded)
-    exit()
+    print(type(loaded))
 
     # load model weights
-    model = get_ec_model(model_weight)
+    model = get_ec_model(config, model_weight)
     model_dict = model.state_dict()
-    snapshot = torch.load(model_weight)
+    snapshot = torch.load(model_weight, map_location=torch.device(device))
     model_dict.update(snapshot)
     model.load_state_dict(model_dict)
 
@@ -76,12 +87,15 @@ def main(facemode='DBLIB', pretrained=True, jitter=0):
     # example input
     #height, width, channels = frame.shape
     #frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    frame = Image.open("data/WALIexample0.png")
+    #frame = Image.open("data/joye.jpg").convert("RGB")
+    frame = Image.open("data/WALIexample0.png").convert("RGB")
 
-    frame_cnt += 1
     bbox = []
     if facemode == 'DLIB':
-        dets = cnn_face_detector(frame, 1)
+        # Alternative face detector
+        dets = cnn_face_detector(np.array(frame), 1)
+        #dets = detector(np.array(frame), 0)
+
         for d in dets:
             l = d.rect.left()
             r = d.rect.right()
@@ -96,6 +110,7 @@ def main(facemode='DBLIB', pretrained=True, jitter=0):
     else:
         raise Exception
 
+    print(bbox)
     #frame = Image.fromarray(frame)
     for b in bbox:
         face = frame.crop((b))
@@ -111,14 +126,19 @@ def main(facemode='DBLIB', pretrained=True, jitter=0):
                 img = torch.cat([img, img_jittered])
 
         # forward pass
-        output = model(img.cuda())
+        output = model(img.to(device))
         if jitter > 0:
             output = torch.mean(output, 0)
         score = F.sigmoid(output).item()
 
         coloridx = min(int(round(score * 10)), 9)
         draw = ImageDraw.Draw(frame)
-        print(draw)
+
+        if 1:
+            drawrect(draw, [(b[0], b[1]), (b[2], b[3])], width=5)
+            draw.text((b[0], b[3]), str(round(score, 2)), fill=(255, 255, 255, 128))
+
+            frame.show()
 
 
 if __name__ == "__main__":
