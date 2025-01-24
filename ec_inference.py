@@ -10,6 +10,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from PIL import Image, ImageDraw
 import dlib
+import pickle
 from network.ec_network_builder import get_ec_model
 
 CNN_FACE_MODEL = 'model/mmod_human_face_detector.dat'  # from http://dlib.net/files/mmod_human_face_detector.dat.bz2
@@ -55,6 +56,12 @@ def main(facemode='DBLIB', pretrained=True, jitter=0):
         model_weight = MODEL_WEIGHTS
     else:
         model_weight = False
+
+    with open(MODEL_WEIGHTS, 'rb') as f:
+        loaded = pickle.load(f)
+
+    print(loaded)
+    exit()
 
     # load model weights
     model = get_ec_model(model_weight)

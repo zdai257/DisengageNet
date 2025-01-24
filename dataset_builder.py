@@ -23,23 +23,160 @@ import matplotlib.pyplot as plt
 input_resolution = 224
 output_resolution = 64
 
-class ECDataset(Dataset):
-    def __init__(self, data_file, transform=None):
-        self.data = pd.read_json(data_file, lines=True)
+import argparse
+import torch
+from torch.utils.data import Dataset
+from torch.optim import RMSprop, Adam, AdamW
+from torch.optim.lr_scheduler import StepLR
+from torchvision import transforms
+from torchvision.transforms import Compose, ToTensor
+import torchvision.transforms.functional as TF
+from PIL import Image, ImageFilter
+import json
+import os
+from os.path import join
+import numpy as np
+from tqdm import tqdm
+import yaml
+import csv
+import random
+import math
+import face_detection
+from network.network_builder import get_gazelle_model, get_gt360_model
+from eval import eval_metrics
+# VAT native data_loader
+#from dataset_builder import VideoAttTarget_video
+
+
+class ColumbiaGazeDataset(Dataset):
+    def __init__(self, dataset_dir, transform=None, isTrain='train', num_subjects=56):
+        self.dataset_dir = dataset_dir
         self.transform = transform
+        self.dataset_path = join(self.dataset_dir, "ColumbiaGaze", "columbia_gaze_data_set", f"Columbia Gaze Data Set")
+        if isTrain == "train":
+            num_subjects = 55
+        subject_lst = list(range(num_subjects))
+        subject_id_str = [str(x).zfill(4) for x in subject_lst]
+        # TODO: get image-gazevec-EClabel from the dataset
+        self.gaze_data = []  # List of (image_name, gaze_vector, ec)
+        for root, dirs, files in os.walk(self.dataset_path):
+            for file in files:
+                if file.endswith('.jpg') and not file.startswith('.'):  # Check for .jpg files
+                    full_path = join(root, file)
+                    filename, _ = os.path.splitext(file)  # Remove extension
+                    labels = filename.split('_')  # Split by '_'
+                    # e.g. "0003_2m_-30P_10V_-10H.jpg": five head Poses, three Vertical gaze angles, seven Horizontal gaze angles
+                    headpose = int(labels[2][:-1])
+                    vertical = int(labels[3][:-1])
+                    horizontal = int(labels[4][:-1])
+                    ec = 0
+                    gaze_vector = (0., 0.)
+                    v_unit = 2 * math.tan(math.radians(10))
+                    #h_unit = 2 * math.tan(math.radians(5))
+                    if vertical == 0:
+                        if headpose == horizontal:
+                            ec = 1
+                        elif headpose < horizontal:
+                            gaze_vector = (1., 0.)
+                        else:
+                            gaze_vector = (-1., 0.)
+                    elif vertical == 10:
+                        if headpose == horizontal:
+                            gaze_vector = (0., 1.)
+                        else:
+                            # TODO: geometry correct?!
+                            gaze_vector = (2*math.tan(math.radians(horizontal - headpose)), v_unit)
+                            magnitude = np.linalg.norm(np.array(gaze_vector))
+                            gaze_vector = (gaze_vector[0]/magnitude, gaze_vector[1]/magnitude)
+                    elif vertical == -10:
+                        if headpose == horizontal:
+                            gaze_vector = (0., -1.)
+                        else:
+                            # TODO: geometry correct?!
+                            gaze_vector = (2*math.tan(math.radians(horizontal - headpose)), -v_unit)
+                            magnitude = np.linalg.norm(np.array(gaze_vector))
+                            gaze_vector = (gaze_vector[0] / magnitude, gaze_vector[1] / magnitude)
+                    self.gaze_data.append((full_path, gaze_vector, ec))
 
     def __len__(self):
-        return len(self.data)
+        return len(self.gaze_data)
 
     def __getitem__(self, idx):
-        item = self.data.iloc[idx]
-        image = Image.open(item['image_path']).convert('RGB')
-        face = None
-
-        label = int(item['label'])
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+        image_path, gaze_vector, ec = self.gaze_data[idx]
+        # Load and process the image
+        image = Image.open(image_path).convert('RGB')
         if self.transform:
             image = self.transform(image)
-        return image, face, label
+        # TODO: Convert gaze vector to a heatmap / grid coordinate at boundary of (66, 66)
+        gaze_vector = np.array(gaze_vector, dtype=np.float32)
+        return image, gaze_vector, ec
+
+
+class Gaze360(Dataset):
+    def __init__(self, anno_path="data/annotations/", transform=None, data_split='train', data_split_name='',
+                 image_mode='RGB', advanced=False):
+        # TODO: load Gaze360 dataset
+        # self.data_dir = data_dir
+        assert data_split == 'train' or data_split == 'test'
+        self.data_split = data_split
+        self.advanced = advanced
+        self.transform = transform
+        self.image_mode = image_mode
+        self.data_list = []  # list(csv.reader(file))
+        for filename in os.listdir(anno_path + "train"):
+            filename = os.path.join(anno_path, "train", filename)
+            file = open(filename, 'r')
+            self.data_list = self.data_list + list(csv.reader(file))
+        random.Random(2022).shuffle(self.data_list)
+        # Split data
+        ratio = 1
+        if data_split == 'train':
+            self.data_list = self.data_list[:round(ratio * len(self.data_list))]
+        elif data_split == 'val':
+            self.data_list = self.data_list[round(ratio * len(self.data_list)):]
+        else:
+            self.data_list = []
+            for filename in os.listdir(anno_path + "test"):
+                filename = os.path.join(anno_path, "test", filename)
+                file = open(filename, 'r')
+                self.data_list = self.data_list + list(csv.reader(file))
+        self.length = len(self.data_list)
+        print(f"Dataset count total: {self.length}")
+    def __getitem__(self, index):
+        # Row:
+        # filename,bbox_x1,bbox_y1,bbox_x2,bbox_y2,split,label
+        data_row = self.data_list[index]
+        base_path = os.getcwd()
+        path = os.path.join(base_path, data_row[0])
+        img = Image.open(path)
+        img = img.convert(self.image_mode)
+        width, height = img.size
+        x_min, y_min, x_max, y_max = round(float(data_row[1])), round(float(data_row[2])), round(
+            float(data_row[3])), round(float(data_row[4]))
+        # k = 0.2 to 0.40
+        if self.data_split == 'train':
+            k = np.random.random_sample() * 0.6 + 0.2
+            x_min -= 0.6 * k * abs(x_max - x_min)
+            y_min -= 2 * k * abs(y_max - y_min)
+            x_max += 0.6 * k * abs(x_max - x_min)
+            y_max += 0.6 * k * abs(y_max - y_min)
+        img_crop = img.crop((max(0, int(x_min)), max(0, int(y_min)), min(width, int(x_max)), min(height, int(y_max))))
+        label = int(data_row[5])
+        if self.transform is not None:
+            img_crop = self.transform(img_crop)
+        if label == 1:
+            label = torch.FloatTensor([0, 1])  # Class 0: No eye contact, Class 1: Eye contact
+        else:
+            label = torch.FloatTensor([1, 0])
+        if self.advanced:
+            return img_crop, label, path  # (bbox_x2-bbox_x1,bbox_y2-bbox_y1)
+        else:
+            return img_crop, label
+    def __len__(self):
+        # 122,450
+        return self.length
 
 
 class VideoAttTarget_video(Dataset):
