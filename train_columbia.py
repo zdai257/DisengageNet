@@ -6,6 +6,7 @@ import pandas as pd
 import json
 from PIL import Image
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, Sampler
 from torchvision import transforms
 from torchvision.transforms import Compose, Resize, ToTensor
@@ -14,7 +15,12 @@ from torch.optim import RMSprop, Adam, AdamW
 from torch.optim.lr_scheduler import StepLR
 from tqdm import tqdm
 import yaml
-#from dataset_builder_builder import *
+import pickle
+import dlib
+from network.ec_network_builder import get_ec_model
+
+CNN_FACE_MODEL = 'model/mmod_human_face_detector.dat'  # from http://dlib.net/files/mmod_human_face_detector.dat.bz2
+MODEL_WEIGHTS = 'model/model_weights.pkl'
 
 
 class ColumbiaGazeDataset(Dataset):
@@ -24,9 +30,13 @@ class ColumbiaGazeDataset(Dataset):
         self.dataset_path = join(self.dataset_dir, "ColumbiaGaze", "columbia_gaze_data_set", f"Columbia Gaze Data Set")
         if isTrain == "train":
             num_subjects = 55
-        subject_lst = list(range(num_subjects))
+            subject_lst = list(range(num_subjects))
+        elif isTrain == "test":
+            num_subjects = 1
+            subject_lst = list(range(55, 56))
         subject_id_str = [str(x).zfill(4) for x in subject_lst]
-        # TODO: get image-gazevec-EClabel from the dataset
+
+        # TODO: leave-one-out for test split
         self.gaze_data = []  # List of (image_name, gaze_vector, ec)
         for root, dirs, files in os.walk(self.dataset_path):
             for file in files:
@@ -87,18 +97,127 @@ class ColumbiaGazeDataset(Dataset):
 
 
 if __name__ == "__main__":
-    data_dir = "./output_DAiSEE/DataSet"
+    pretrained = False
 
-    for split in os.listdir(data_dir):
-        if split == 'Test':
-            for id in os.listdir(join(data_dir, split)):
-                for root, dirs, files in os.walk(join(data_dir, split, id)):
-                    print(root, dirs)
-                    print(files)
-                    for filename in files:
-                        if filename.endswith('.csv'):
-                            df = pd.read_csv(join(root, filename), header=0, sep=',').values
-                            seq_length = df.shape[0]
-                            print(seq_length, df.shape)
+    # Load config file
+    with open('configuration.yaml', 'r') as file:
+        config = yaml.safe_load(file)
 
+    device = config['hardware']['device'] if torch.cuda.is_available() else "cpu"
+    print("Running on {}".format(device))
+
+    cnn_face_detector = dlib.cnn_face_detection_model_v1(CNN_FACE_MODEL)
+
+    if pretrained == True:
+        model_weight = MODEL_WEIGHTS
+    else:
+        model_weight = False
+
+    with open(MODEL_WEIGHTS, 'rb') as f:
+        loaded = pickle.load(f)
+
+    # load model weights
+    model = get_ec_model(config, model_weight)
+
+    model_dict = model.state_dict()
+    # still necessary for random init?
+    #snapshot = torch.load(model_weight, map_location=torch.device(device))
+    #model_dict.update(snapshot)
+    model.load_state_dict(model_dict)
+
+    # Randomly initialize learnable parameters
+    for name, param in model.named_parameters():
+        if param.requires_grad:  # Only initialize unfrozen parameters
+            if param.dim() > 1:  # Weights
+                torch.nn.init.xavier_normal_(param)
+            else:  # Biases
+                torch.nn.init.zeros_(param)
+
+    model.to(device)
+
+    lr = 0.0001
+    num_epochs = 100
+
+    # assign lr
+    param_dicts = []
+    for n, p in model.named_parameters():
+        if p.requires_grad:
+            param_dicts.append({'params': p, 'lr': lr})
+
+    optimizer = Adam(param_dicts)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
+
+    input_resolution = 224
+
+    train_transforms = transforms.Compose([transforms.Resize(input_resolution),
+                                           transforms.CenterCrop(input_resolution),
+                                           transforms.ToTensor(),
+                                           transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]
+                                          )
+
+    train_dataset = ColumbiaGazeDataset("", transform=train_transforms)
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=32,
+        #collate_fn=collate,
+        # shuffle=True,
+        num_workers=3,
+        pin_memory=True
+    )
+
+    train_length = train_dataset.__len__()
+
+    bce_loss = torch.nn.BCELoss(reduction='sum')  # Binary Cross-Entropy Loss
+
+    # save dir for checkpoints
+    os.makedirs('ec_checkpoints', exist_ok=True)
+
+    best_loss = float('inf')
+
+    # START TRAINING
+    for epoch in range(num_epochs):
+        model.train()
+        epoch_loss = 0.
+
+        for batch, (image, _, ec) in tqdm(enumerate(train_loader), total=len(train_loader)):
+            bbox = []
+            #TODO: face detect for a Batch
+            dets = cnn_face_detector(np.array(image), 1)
+            for d in dets:
+                l = d.rect.left()
+                r = d.rect.right()
+                t = d.rect.top()
+                b = d.rect.bottom()
+                # expand a bit
+                l -= (r - l) * 0.2
+                r += (r - l) * 0.2
+                t -= (b - t) * 0.2
+                b += (b - t) * 0.2
+                bbox.append([l, t, r, b])
+
+            for b in bbox:
+                face = image.crop((b))
+                # TODO: do transform after crop??
+
+                # forward pass
+                preds = model(image.to(device))
+
+                score = F.sigmoid(preds).item()
+
+                # TODO: correct Loss func
+                ec_loss = bce_loss(score, ec)
+
+                optimizer.zero_grad()
+                ec_loss.backward()
+                optimizer.step()
+
+                # Accumulate loss for reporting
+                epoch_loss += ec_loss.item()
+
+            scheduler.step()
+
+            mean_ep_loss = epoch_loss / train_length
+
+            print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {mean_ep_loss:.4f}")
 
