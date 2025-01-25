@@ -293,7 +293,7 @@ def main():
             total_bce_loss = bce_loss(torch.cat(classification_preds, dim=0), torch.cat(gt_inout, dim=0))
 
             # hide MSE lose when out-of-frame
-            inout_mask = (gt_inout == 1).float()
+            inout_mask = torch.tensor(float(gt_inout == 1), dtype=torch.float32)
 
             total_mse_loss = mse_loss(torch.cat(regression_preds, dim=0), torch.cat(gt_gaze_xy, dim=0))
             total_mse_loss = total_mse_loss * inout_mask.squeeze()

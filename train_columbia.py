@@ -27,7 +27,8 @@ class ColumbiaGazeDataset(Dataset):
     def __init__(self, dataset_dir, transform=None, isTrain='train', num_subjects=56):
         self.dataset_dir = dataset_dir
         self.transform = transform
-        self.dataset_path = join(self.dataset_dir, "ColumbiaGaze", "columbia_gaze_data_set", f"Columbia Gaze Data Set")
+        #self.dataset_path = join(self.dataset_dir, "ColumbiaGaze", "columbia_gaze_data_set", f"Columbia Gaze Data Set")
+        self.dataset_path = join(self.dataset_dir, "Columbia", f"Columbia Gaze Data Set")
         if isTrain == "train":
             num_subjects = 55
             subject_lst = list(range(num_subjects))
@@ -89,8 +90,13 @@ class ColumbiaGazeDataset(Dataset):
         image_path, gaze_vector, ec = self.gaze_data[idx]
         # Load and process the image
         image = Image.open(image_path).convert('RGB')
+
+        base_transform = transforms.ToTensor()
         if self.transform:
             image = self.transform(image)
+        else:
+            image = base_transform(image)
+
         # TODO: Convert gaze vector to a heatmap / grid coordinate at boundary of (66, 66)
         gaze_vector = np.array(gaze_vector, dtype=np.float32)
         return image, gaze_vector, ec
@@ -160,11 +166,11 @@ if __name__ == "__main__":
                                            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]
                                           )
 
-    train_dataset = ColumbiaGazeDataset("", transform=None)
+    train_dataset = ColumbiaGazeDataset("./", transform=None)
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
-        batch_size=32,
+        batch_size=8,
         collate_fn=collate,
         # shuffle=True,
         num_workers=3,
@@ -190,8 +196,13 @@ if __name__ == "__main__":
             bbox = []
             # TODO: face detector as processing, rather than training step
             # face detect for a Batch
-            img_lst = [image[i].numpy() for i in range(image.shape[0])]
-            dets_lst = cnn_face_detector(img_lst, 1)
+            #img_lst = [image[i] for i in range(image.shape[0])]
+            # Change shape to (H, W, C); Scale values to [0, 255] and convert to uint8
+            img_lst = [(image[i].permute(1, 2, 0).numpy() * 255).astype(np.uint8) for i in range(image.shape[0])]
+
+            dets_lst = []
+            for img in img_lst:
+                dets_lst.append(cnn_face_detector(img, 1))
 
             for d in dets_lst:
                 # for Columbia, presume one face per image
