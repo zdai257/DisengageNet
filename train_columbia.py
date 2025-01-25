@@ -96,6 +96,11 @@ class ColumbiaGazeDataset(Dataset):
         return image, gaze_vector, ec
 
 
+def collate(batch):
+    image, gaze_vector, ec = zip(*batch)
+    return torch.stack(image), list(gaze_vector), list(ec)
+
+
 if __name__ == "__main__":
     pretrained = False
 
@@ -155,12 +160,12 @@ if __name__ == "__main__":
                                            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]
                                           )
 
-    train_dataset = ColumbiaGazeDataset("", transform=train_transforms)
+    train_dataset = ColumbiaGazeDataset("", transform=None)
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=32,
-        #collate_fn=collate,
+        collate_fn=collate,
         # shuffle=True,
         num_workers=3,
         pin_memory=True
@@ -168,7 +173,8 @@ if __name__ == "__main__":
 
     train_length = train_dataset.__len__()
 
-    bce_loss = torch.nn.BCELoss(reduction='sum')  # Binary Cross-Entropy Loss
+    #bce_loss = torch.nn.BCELoss(reduction='sum')  # Binary Cross-Entropy Loss
+    bce_loss = torch.nn.BCEWithLogitsLoss()
 
     # save dir for checkpoints
     os.makedirs('ec_checkpoints', exist_ok=True)
@@ -182,9 +188,14 @@ if __name__ == "__main__":
 
         for batch, (image, _, ec) in tqdm(enumerate(train_loader), total=len(train_loader)):
             bbox = []
-            #TODO: face detect for a Batch
-            dets = cnn_face_detector(np.array(image), 1)
-            for d in dets:
+            # TODO: face detector as processing, rather than training step
+            # face detect for a Batch
+            img_lst = [image[i].numpy() for i in range(image.shape[0])]
+            dets_lst = cnn_face_detector(img_lst, 1)
+
+            for d in dets_lst:
+                # for Columbia, presume one face per image
+                d = d[0]
                 l = d.rect.left()
                 r = d.rect.right()
                 t = d.rect.top()
@@ -196,28 +207,34 @@ if __name__ == "__main__":
                 b += (b - t) * 0.2
                 bbox.append([l, t, r, b])
 
-            for b in bbox:
-                face = image.crop((b))
-                # TODO: do transform after crop??
+            imgs = []
+            for i, b in enumerate(bbox):
+                face = Image.fromarray(img_lst[i]).crop((b))
 
-                # forward pass
-                preds = model(image.to(device))
+                imgs.append(train_transforms(face))
 
-                score = F.sigmoid(preds).item()
+            images = torch.stack(imgs)
 
-                # TODO: correct Loss func
-                ec_loss = bce_loss(score, ec)
+            # forward pass
+            preds = model(images.to(device))
 
-                optimizer.zero_grad()
-                ec_loss.backward()
-                optimizer.step()
+            score = F.sigmoid(preds).item()
 
-                # Accumulate loss for reporting
-                epoch_loss += ec_loss.item()
+            # TODO: correct Loss func
+            print(score, ec)
+            continue
+            ec_loss = bce_loss(score, ec)
 
-            scheduler.step()
+            optimizer.zero_grad()
+            ec_loss.backward()
+            optimizer.step()
 
-            mean_ep_loss = epoch_loss / train_length
+            # Accumulate loss for reporting
+            epoch_loss += ec_loss.item()
 
-            print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {mean_ep_loss:.4f}")
+        scheduler.step()
+
+        mean_ep_loss = epoch_loss / train_length
+
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {mean_ep_loss:.4f}")
 
