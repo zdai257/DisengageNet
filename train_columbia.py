@@ -16,7 +16,7 @@ from torch.optim.lr_scheduler import StepLR
 from tqdm import tqdm
 import yaml
 import pickle
-import dlib
+#import dlib
 from network.ec_network_builder import get_ec_model
 
 #CNN_FACE_MODEL = 'model/mmod_human_face_detector.dat'  # from http://dlib.net/files/mmod_human_face_detector.dat.bz2
@@ -108,7 +108,7 @@ class ColumbiaCroppedDataset(Dataset):
         self.transform = transform
         #self.dataset_path = join(self.dataset_dir, "ColumbiaGaze", "columbia_gaze_data_set", f"Columbia Gaze Data Set")
         self.dataset_path = join(self.dataset_dir, "Columbia", "cropped")
-        self.target_annotation = join(self.dataset_dir, "labels.json")
+        self.target_annotation = join(self.dataset_dir, "Columbia", "labels.json")
 
         if split == "train":
             num_samples = 55
@@ -121,7 +121,7 @@ class ColumbiaCroppedDataset(Dataset):
         # loading preprocessed
         with open(self.target_annotation, "r") as file:
             data = json.load(file)
-
+        #print(data)
         # e.g. "0003_2m_-30P_10V_-10H.jpg": five head Poses, three Vertical gaze angles, seven Horizontal gaze angles
         # data: { 0: (filepath, gaze_vec, ec) ...}
 
@@ -129,8 +129,9 @@ class ColumbiaCroppedDataset(Dataset):
         data_lst = data.values()
         for sample in data_lst:
             id = sample[0].split('/')[-1].split('_')[0]
+            imgname = sample[0].split('/')[-1]
             if id in subject_id_str:
-                self.gaze_data.append(sample)
+                self.gaze_data.append([join(self.dataset_path, split, imgname), sample[1], sample[2]])
 
     def __len__(self):
         return len(self.gaze_data)
@@ -139,6 +140,7 @@ class ColumbiaCroppedDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
         image_path, gaze_vector, ec = self.gaze_data[idx]
+        #print(image_path)
         # Load and process the image
         image = Image.open(image_path).convert('RGB')
 
@@ -258,13 +260,17 @@ if __name__ == "__main__":
 
             # forward pass
             preds = model(image.to(device))
+            #print(preds, preds.shape)
+            #print(ec, len(ec))
+            #exit()
 
-            score = F.sigmoid(preds).item()
+            #score = F.sigmoid(preds).item()
 
             # TODO: correct Loss func
-            print(score, ec)
+            #print(score, ec)
+            ec = torch.tensor(ec, dtype=torch.float32, requires_grad=False)
 
-            ec_loss = bce_loss(score, ec)
+            ec_loss = bce_loss(preds.squeeze(), ec)
 
             optimizer.zero_grad()
             ec_loss.backward()
