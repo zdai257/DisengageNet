@@ -12,7 +12,7 @@ cnn_face_detector = dlib.cnn_face_detection_model_v1(CNN_FACE_MODEL)
 
 
 def apply_face_crop(img):
-
+    print("Start face cropping")
     # for Columbia, presume one face per image
     dets = cnn_face_detector(np.array(img), 1)
     assert len(dets) == 1
@@ -32,11 +32,11 @@ def apply_face_crop(img):
 
     b = bbox[0]
     face = img.crop((b))
-
+    print(face.size, type(face))
     return face
 
 
-def load_columbia(dataset_dir='./', train_size=55, num_subjects=56):
+def load_columbia(dataset_dir='./', new_size=(864, 576), train_size=55, num_subjects=56):
 
     target_annotation = join(dataset_dir, "labels.json")
     target_path = join(dataset_dir, "Columbia", "cropped")
@@ -60,13 +60,15 @@ def load_columbia(dataset_dir='./', train_size=55, num_subjects=56):
                 full_path = join(root, file)
                 frame = Image.open(full_path).convert("RGB")
 
+                frame = frame.resize(new_size)
+
                 face_frame = apply_face_crop(frame)
 
                 filename, _ = os.path.splitext(file)  # Remove extension
                 labels = filename.split('_')  # Split by '_'
 
                 subject_id = labels[0]
-
+                #print(subject_id, subject_id_str)
                 # save cropped face to file
                 if subject_id in subject_id_str:
                     face_frame.save(join(target_path, 'train', file), format="JPEG")
