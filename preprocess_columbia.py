@@ -15,7 +15,8 @@ def apply_face_crop(img):
     print("Start face cropping")
     # for Columbia, presume one face per image
     dets = cnn_face_detector(np.array(img), 1)
-    assert len(dets) == 1
+    if len(dets) == 0:
+        return img
 
     bbox = []
     for d in dets:
@@ -29,6 +30,7 @@ def apply_face_crop(img):
         t -= (b - t) * 0.2
         b += (b - t) * 0.2
         bbox.append([l, t, r, b])
+        break
 
     b = bbox[0]
     face = img.crop((b))

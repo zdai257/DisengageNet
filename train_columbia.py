@@ -19,7 +19,7 @@ import pickle
 import dlib
 from network.ec_network_builder import get_ec_model
 
-CNN_FACE_MODEL = 'model/mmod_human_face_detector.dat'  # from http://dlib.net/files/mmod_human_face_detector.dat.bz2
+#CNN_FACE_MODEL = 'model/mmod_human_face_detector.dat'  # from http://dlib.net/files/mmod_human_face_detector.dat.bz2
 MODEL_WEIGHTS = 'model/model_weights.pkl'
 
 
@@ -102,6 +102,57 @@ class ColumbiaGazeDataset(Dataset):
         return image, gaze_vector, ec
 
 
+class ColumbiaCroppedDataset(Dataset):
+    def __init__(self, dataset_dir, transform=None, split='train', num_subjects=56):
+        self.dataset_dir = dataset_dir
+        self.transform = transform
+        #self.dataset_path = join(self.dataset_dir, "ColumbiaGaze", "columbia_gaze_data_set", f"Columbia Gaze Data Set")
+        self.dataset_path = join(self.dataset_dir, "Columbia", "cropped")
+        self.target_annotation = join(self.dataset_dir, "labels.json")
+
+        if split == "train":
+            num_samples = 55
+            subject_lst = list(range(num_subjects))
+        elif split == "test":
+            num_samples = 1
+            subject_lst = list(range(55, 56))
+        subject_id_str = [str(x).zfill(4) for x in subject_lst]
+
+        # loading preprocessed
+        with open(self.target_annotation, "r") as file:
+            data = json.load(file)
+
+        # e.g. "0003_2m_-30P_10V_-10H.jpg": five head Poses, three Vertical gaze angles, seven Horizontal gaze angles
+        # data: { 0: (filepath, gaze_vec, ec) ...}
+
+        self.gaze_data = []
+        data_lst = data.values()
+        for sample in data_lst:
+            id = sample[0].split('/')[-1].split('_')[0]
+            if id in subject_id_str:
+                self.gaze_data.append(sample)
+
+    def __len__(self):
+        return len(self.gaze_data)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+        image_path, gaze_vector, ec = self.gaze_data[idx]
+        # Load and process the image
+        image = Image.open(image_path).convert('RGB')
+
+        base_transform = transforms.ToTensor()
+        if self.transform:
+            image = self.transform(image)
+        else:
+            image = base_transform(image)
+
+        # TODO: Convert gaze vector to a heatmap / grid coordinate at boundary of (66, 66)
+        gaze_vector = np.array(gaze_vector, dtype=np.float32)
+        return image, gaze_vector, ec
+
+
 def collate(batch):
     image, gaze_vector, ec = zip(*batch)
     return torch.stack(image), list(gaze_vector), list(ec)
@@ -117,7 +168,7 @@ if __name__ == "__main__":
     device = config['hardware']['device'] if torch.cuda.is_available() else "cpu"
     print("Running on {}".format(device))
 
-    cnn_face_detector = dlib.cnn_face_detection_model_v1(CNN_FACE_MODEL)
+    #cnn_face_detector = dlib.cnn_face_detection_model_v1(CNN_FACE_MODEL)
 
     if pretrained == True:
         model_weight = MODEL_WEIGHTS
@@ -166,7 +217,9 @@ if __name__ == "__main__":
                                            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]
                                           )
 
-    train_dataset = ColumbiaGazeDataset("./", transform=None)
+    #train_dataset = ColumbiaGazeDataset("./", transform=None)
+    train_dataset = ColumbiaCroppedDataset("./", transform=train_transforms)
+    test_dataset = ColumbiaCroppedDataset("./", transform=train_transforms, split='test')
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -176,8 +229,17 @@ if __name__ == "__main__":
         num_workers=3,
         pin_memory=True
     )
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=8,
+        collate_fn=collate,
+        # shuffle=True,
+        num_workers=3,
+        pin_memory=True
+    )
 
     train_length = train_dataset.__len__()
+    test_length = test_dataset.__len__()
 
     #bce_loss = torch.nn.BCELoss(reduction='sum')  # Binary Cross-Entropy Loss
     bce_loss = torch.nn.BCEWithLogitsLoss()
@@ -193,47 +255,15 @@ if __name__ == "__main__":
         epoch_loss = 0.
 
         for batch, (image, _, ec) in tqdm(enumerate(train_loader), total=len(train_loader)):
-            bbox = []
-            # TODO: face detector as processing, rather than training step
-            # face detect for a Batch
-            #img_lst = [image[i] for i in range(image.shape[0])]
-            # Change shape to (H, W, C); Scale values to [0, 255] and convert to uint8
-            img_lst = [(image[i].permute(1, 2, 0).numpy() * 255).astype(np.uint8) for i in range(image.shape[0])]
-
-            dets_lst = []
-            for img in img_lst:
-                dets_lst.append(cnn_face_detector(img, 1))
-
-            for d in dets_lst:
-                # for Columbia, presume one face per image
-                d = d[0]
-                l = d.rect.left()
-                r = d.rect.right()
-                t = d.rect.top()
-                b = d.rect.bottom()
-                # expand a bit
-                l -= (r - l) * 0.2
-                r += (r - l) * 0.2
-                t -= (b - t) * 0.2
-                b += (b - t) * 0.2
-                bbox.append([l, t, r, b])
-
-            imgs = []
-            for i, b in enumerate(bbox):
-                face = Image.fromarray(img_lst[i]).crop((b))
-
-                imgs.append(train_transforms(face))
-
-            images = torch.stack(imgs)
 
             # forward pass
-            preds = model(images.to(device))
+            preds = model(image.to(device))
 
             score = F.sigmoid(preds).item()
 
             # TODO: correct Loss func
             print(score, ec)
-            continue
+
             ec_loss = bce_loss(score, ec)
 
             optimizer.zero_grad()
