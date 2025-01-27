@@ -161,7 +161,6 @@ def collate(batch):
 
 
 if __name__ == "__main__":
-    pretrained = False
 
     # Load config file
     with open('configuration.yaml', 'r') as file:
@@ -170,7 +169,8 @@ if __name__ == "__main__":
     device = config['hardware']['device'] if torch.cuda.is_available() else "cpu"
     print("Running on {}".format(device))
 
-    #cnn_face_detector = dlib.cnn_face_detection_model_v1(CNN_FACE_MODEL)
+    # TODO: populate config
+    pretrained = False
 
     if pretrained == True:
         model_weight = MODEL_WEIGHTS
@@ -221,7 +221,10 @@ if __name__ == "__main__":
 
     #train_dataset = ColumbiaGazeDataset("./", transform=None)
     train_dataset = ColumbiaCroppedDataset("./", transform=train_transforms)
-    test_dataset = ColumbiaCroppedDataset("./", transform=train_transforms, split='test')
+    test_dataset = ColumbiaCroppedDataset("./",
+                                          transform=transforms.Compose([transforms.ToTensor()]),
+                                          split='test'
+                                          )
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -247,9 +250,11 @@ if __name__ == "__main__":
     bce_loss = torch.nn.BCEWithLogitsLoss()
 
     # save dir for checkpoints
-    os.makedirs('ec_checkpoints', exist_ok=True)
+    out_dir = 'results/ec_checkpoints'
+    os.makedirs(out_dir, exist_ok=True)
 
     best_loss = float('inf')
+    test_loss = 0
 
     # START TRAINING
     for epoch in range(num_epochs):
@@ -266,7 +271,6 @@ if __name__ == "__main__":
 
             #score = F.sigmoid(preds).item()
 
-            # TODO: correct Loss func
             #print(score, ec)
             ec = torch.tensor(ec, dtype=torch.float32, requires_grad=False)
 
@@ -285,3 +289,40 @@ if __name__ == "__main__":
 
         print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {mean_ep_loss:.4f}")
 
+        # testing
+        model.eval()
+        epoch_test_loss = 0.
+        num_correct_preds = 0
+        for batch, (image, _, ec) in tqdm(enumerate(test_loader), total=test_length):
+
+            preds = model(image.to(device))
+
+            ec = torch.tensor(ec, dtype=torch.float32, requires_grad=False)
+
+            test_loss = bce_loss(preds.squeeze(), ec)
+
+            epoch_test_loss += test_loss.item()
+
+            preds_rounded = torch.round(preds.squeeze())
+            correct_preds = (preds_rounded == ec)
+            num_correct_preds += correct_preds.sum().item()
+
+        # Calculate accuracy
+        accu = num_correct_preds / test_length
+
+        mean_ep_test_loss = epoch_test_loss / test_length
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Testing Loss: {mean_ep_test_loss:.4f}, Accu: {accu:.3f}")
+
+        # Save best model based on mean_ep_test_loss
+        if mean_ep_test_loss < best_loss and epoch > 3:
+            best_loss = mean_ep_test_loss
+            checkpoint_path = os.path.join(out_dir, f"Best_epoch_{epoch + 1}_loss{int(best_loss*100)}_accu{accu}.pt")
+            best_checkpoint_path = checkpoint_path
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
+                'loss': best_loss
+            }, checkpoint_path)
+            print(f"Checkpoint saved at {checkpoint_path}")
