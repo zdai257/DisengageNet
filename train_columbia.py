@@ -31,7 +31,7 @@ class ColumbiaGazeDataset(Dataset):
         self.dataset_path = join(self.dataset_dir, "Columbia", f"Columbia Gaze Data Set")
         if isTrain == "train":
             num_subjects = 55
-            subject_lst = list(range(num_subjects))
+            subject_lst = list(range(1, num_subjects))
         elif isTrain == "test":
             num_subjects = 1
             subject_lst = list(range(55, 56))
@@ -103,7 +103,7 @@ class ColumbiaGazeDataset(Dataset):
 
 
 class ColumbiaCroppedDataset(Dataset):
-    def __init__(self, dataset_dir, transform=None, split='train', num_subjects=56):
+    def __init__(self, dataset_dir, transform=None, split='train'):
         self.dataset_dir = dataset_dir
         self.transform = transform
         #self.dataset_path = join(self.dataset_dir, "ColumbiaGaze", "columbia_gaze_data_set", f"Columbia Gaze Data Set")
@@ -111,10 +111,10 @@ class ColumbiaCroppedDataset(Dataset):
         self.target_annotation = join(self.dataset_dir, "Columbia", "labels.json")
 
         if split == "train":
-            num_samples = 55
-            subject_lst = list(range(num_subjects))
+            num_subjects = 55
+            subject_lst = list(range(1, num_subjects))
         elif split == "test":
-            num_samples = 1
+            num_subjects = 1
             subject_lst = list(range(55, 56))
         subject_id_str = [str(x).zfill(4) for x in subject_lst]
 
@@ -222,7 +222,7 @@ if __name__ == "__main__":
     #train_dataset = ColumbiaGazeDataset("./", transform=None)
     train_dataset = ColumbiaCroppedDataset("./", transform=train_transforms)
     test_dataset = ColumbiaCroppedDataset("./",
-                                          transform=transforms.Compose([transforms.ToTensor()]),
+                                          transform=train_transforms,
                                           split='test'
                                           )
 
@@ -248,6 +248,7 @@ if __name__ == "__main__":
 
     #bce_loss = torch.nn.BCELoss(reduction='sum')  # Binary Cross-Entropy Loss
     bce_loss = torch.nn.BCEWithLogitsLoss()
+    val_bce_loss = torch.nn.BCEWithLogitsLoss()
 
     # save dir for checkpoints
     out_dir = 'results/ec_checkpoints'
@@ -274,7 +275,7 @@ if __name__ == "__main__":
             #print(score, ec)
             ec = torch.tensor(ec, dtype=torch.float32, requires_grad=False)
 
-            ec_loss = bce_loss(preds.squeeze(), ec)
+            ec_loss = bce_loss(preds.squeeze(1), ec.to(device))
 
             optimizer.zero_grad()
             ec_loss.backward()
@@ -299,12 +300,12 @@ if __name__ == "__main__":
 
             ec = torch.tensor(ec, dtype=torch.float32, requires_grad=False)
 
-            test_loss = bce_loss(preds.squeeze(), ec)
+            test_loss = val_bce_loss(preds.squeeze(1), ec.to(device))
 
             epoch_test_loss += test_loss.item()
 
             preds_rounded = torch.round(preds.squeeze())
-            correct_preds = (preds_rounded == ec)
+            correct_preds = (preds_rounded == ec.detach().cpu())
             num_correct_preds += correct_preds.sum().item()
 
         # Calculate accuracy
