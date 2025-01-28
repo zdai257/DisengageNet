@@ -170,7 +170,7 @@ if __name__ == "__main__":
     print("Running on {}".format(device))
 
     # TODO: populate config
-    pretrained = False
+    pretrained = True
 
     if pretrained == True:
         model_weight = MODEL_WEIGHTS
@@ -305,7 +305,7 @@ if __name__ == "__main__":
             epoch_test_loss += test_loss.item()
 
             preds_rounded = torch.round(preds.squeeze())
-            correct_preds = (preds_rounded == ec.detach().cpu())
+            correct_preds = (preds_rounded.detach().cpu() == ec.detach().cpu())
             num_correct_preds += correct_preds.sum().item()
 
         # Calculate accuracy
@@ -317,7 +317,7 @@ if __name__ == "__main__":
         # Save best model based on mean_ep_test_loss
         if mean_ep_test_loss < best_loss and epoch > 3:
             best_loss = mean_ep_test_loss
-            checkpoint_path = os.path.join(out_dir, f"Best_epoch_{epoch + 1}_loss{int(best_loss*100)}_accu{accu}.pt")
+            checkpoint_path = os.path.join(out_dir, f"Best_epoch_{epoch + 1}_loss{int(best_loss*100)}_accu{int(accu*100)}.pt")
             best_checkpoint_path = checkpoint_path
             torch.save({
                 'epoch': epoch + 1,
