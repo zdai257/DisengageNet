@@ -85,10 +85,17 @@ def main(facemode='DLIB', pretrained=True, jitter=0):
     model.eval()
 
     # example input
+    # SELECT TEST IMAGE
+    # img_source = "data/WALIexample0.png"
+    #img_source = "data/0028_2m_30P_0V_0H.jpg"
+    img_source = "data/0028_2m_-15P_10V_5H.jpg"
+
     #height, width, channels = frame.shape
     #frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     #frame = Image.open("data/joye.jpg").convert("RGB")
-    frame = Image.open("data/WALIexample0.png").convert("RGB")
+    frame = Image.open(img_source).convert("RGB")
+
+    frame = frame.resize((864, 576))
 
     bbox = []
     if facemode == 'DLIB':
@@ -139,6 +146,8 @@ def main(facemode='DLIB', pretrained=True, jitter=0):
             draw.text((b[0], b[3]), str(round(score, 2)), fill=(255, 255, 255, 128))
 
             frame.show()
+            saved_path = join("processed", "EC_" + img_source.split('/')[-1])
+            frame.save(saved_path)
 
 
 if __name__ == "__main__":

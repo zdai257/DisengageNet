@@ -199,7 +199,7 @@ if __name__ == "__main__":
 
     model.to(device)
 
-    lr = 0.0001
+    lr = 0.001
     num_epochs = 100
 
     # assign lr
@@ -246,6 +246,7 @@ if __name__ == "__main__":
     train_length = train_dataset.__len__()
     test_length = test_dataset.__len__()
 
+    # TODO: weight balancing for unbalanced EC labels?
     #bce_loss = torch.nn.BCELoss(reduction='sum')  # Binary Cross-Entropy Loss
     bce_loss = torch.nn.BCEWithLogitsLoss()
     val_bce_loss = torch.nn.BCEWithLogitsLoss()
@@ -294,7 +295,7 @@ if __name__ == "__main__":
         model.eval()
         epoch_test_loss = 0.
         num_correct_preds = 0
-        for batch, (image, _, ec) in tqdm(enumerate(test_loader), total=test_length):
+        for batch, (image, _, ec) in tqdm(enumerate(test_loader), total=len(test_loader)):
 
             preds = model(image.to(device))
 
@@ -312,7 +313,7 @@ if __name__ == "__main__":
         accu = num_correct_preds / test_length
 
         mean_ep_test_loss = epoch_test_loss / test_length
-        print(f"Epoch [{epoch + 1}/{num_epochs}], Testing Loss: {mean_ep_test_loss:.4f}, Accu: {accu:.3f}")
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Testing Loss: {mean_ep_test_loss:.4f}, Accu: {accu:.4f}")
 
         # Save best model based on mean_ep_test_loss
         if mean_ep_test_loss < best_loss and epoch > 3:
