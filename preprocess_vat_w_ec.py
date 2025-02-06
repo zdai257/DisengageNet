@@ -39,7 +39,29 @@ def load_vat(path, img_transform=None, split='train'):
     return vat
 
 
-def main():
+def visualise_hist(output_json):
+    with open(output_json, 'r') as file:
+        vat_data = json.load(file)
+
+    # Define the 10 bins
+    bins = np.linspace(0, 1, 11)
+
+    hist, bin_edges = np.histogram(vat_data, bins=bins)
+
+    print("Histogram:", hist)
+    print("Bin edges:", bin_edges)
+
+    import matplotlib.pyplot as plt
+
+    # Plotting the histogram
+    plt.hist(vat_data, bins=10, range=(0, 1), edgecolor='black')
+    plt.title('Histogram of Eye-Contact Instances in VAT Dataset')
+    plt.xlabel('Eye-Contact Value')
+    plt.ylabel('Frequency')
+    plt.show()
+
+
+def main(output_filename):
     with open('configuration.yaml', 'r') as file:
         config = yaml.safe_load(file)
 
@@ -92,10 +114,12 @@ def main():
 
         vat_w_ec.append(img_lst)
 
-    with open("VAT_w_EC.json", "w") as file:
+    with open(output_filename, "w") as file:
         json.dump(vat_w_ec, file)
 
 
 if __name__ == "__main__":
-    main()
+    new_output = "VAT_w_EC.json"
 
+    main(new_output)
+    #visualise_hist(new_output)
