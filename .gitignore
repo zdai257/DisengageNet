@@ -8,3 +8,5 @@ MPIIFaceGaze/
 Columbia/
 results/
 data/
+*.parquet
+
