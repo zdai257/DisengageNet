@@ -46,7 +46,14 @@ def visualise_hist(output_json):
     # Define the 10 bins
     bins = np.linspace(0, 1, 11)
 
-    hist, bin_edges = np.histogram(vat_data, bins=bins)
+    ecs = []
+    for idx, img_lst in enumerate(vat_data):
+        for face_lst in img_lst:
+            ecs.append(face_lst[5])
+
+    print("New VAT dataset length (i.e. total faces) = ", len(ecs))
+
+    hist, bin_edges = np.histogram(ecs, bins=bins)
 
     print("Histogram:", hist)
     print("Bin edges:", bin_edges)
@@ -54,10 +61,12 @@ def visualise_hist(output_json):
     import matplotlib.pyplot as plt
 
     # Plotting the histogram
-    plt.hist(vat_data, bins=10, range=(0, 1), edgecolor='black')
+    plt.hist(ecs, bins=10, range=(0, 1), edgecolor='black')
     plt.title('Histogram of Eye-Contact Instances in VAT Dataset')
     plt.xlabel('Eye-Contact Value')
     plt.ylabel('Frequency')
+    plt.savefig("data/VAT_ec_hist.png")
+
     plt.show()
 
 
@@ -121,5 +130,5 @@ def main(output_filename):
 if __name__ == "__main__":
     new_output = "VAT_w_EC.json"
 
-    main(new_output)
-    #visualise_hist(new_output)
+    #main(new_output)
+    visualise_hist(new_output)
