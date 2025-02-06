@@ -61,6 +61,8 @@ def main():
     model.eval()
 
     vat = load_vat('./VAT')
+    vat_test = load_vat('./VAT', split='test')
+    vat.extend(vat_test)
 
     vat_w_ec = []
 
@@ -72,6 +74,7 @@ def main():
 
             img = image.crop(bbox)
             img = my_transforms(img)
+            img.unsqueeze_(0)
 
             # bboxes are tuples of form (xmin, ymin, xmax, ymax) and are in [0,1] normalized image coordinates
             # .crop method expects: (left, top, right, bottom)
