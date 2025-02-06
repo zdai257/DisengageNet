@@ -69,7 +69,7 @@ def main():
     for i, item in enumerate(vat):
         image = Image.open(item[0]).convert('RGB')
 
-        img_tuple = tuple()
+        img_lst = list()
         for head_idx, bbox in enumerate(item[1]):
 
             img = image.crop(bbox)
@@ -82,9 +82,9 @@ def main():
 
             score = F.sigmoid(output).item()
 
-            img_tuple = (item[0], item[1], item[2], item[3], item[4], score)
+            img_lst.append((item[0], item[1][head_idx], item[2][head_idx], item[3][head_idx], item[4][head_idx], score))
 
-        vat_w_ec.append(img_tuple)
+        vat_w_ec.append(img_lst)
 
     with open("VAT_w_EC.json", "w") as file:
         json.dump(vat_w_ec, file)
