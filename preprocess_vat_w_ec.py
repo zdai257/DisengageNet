@@ -68,16 +68,22 @@ def main():
 
     for i, item in enumerate(vat):
         image = Image.open(item[0]).convert('RGB')
+        w, h = image.size
 
         img_lst = list()
         for head_idx, bbox in enumerate(item[1]):
+            # bboxes are tuples of form (xmin, ymin, xmax, ymax) and are in [0,1] normalized image coordinates
+            # .crop method expects: (left, top, right, bottom)
+            xmin, ymin, xmax, ymax = bbox
+            xmin_pixel = int(xmin * w)
+            ymin_pixel = int(ymin * h)
+            xmax_pixel = int(xmax * w)
+            ymax_pixel = int(ymax * h)
 
-            img = image.crop(bbox)
+            img = image.crop((xmin_pixel, ymin_pixel, xmax_pixel, ymax_pixel))
             img = my_transforms(img)
             img.unsqueeze_(0)
 
-            # bboxes are tuples of form (xmin, ymin, xmax, ymax) and are in [0,1] normalized image coordinates
-            # .crop method expects: (left, top, right, bottom)
             output = model(img.to(device))
 
             score = F.sigmoid(output).item()
