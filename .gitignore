@@ -6,6 +6,7 @@ output*/
 VAT/
 MPIIFaceGaze/
 Columbia/
+GazeFollow/
 results/
 data/
 *.parquet
