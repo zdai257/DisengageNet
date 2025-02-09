@@ -12,6 +12,43 @@ import yaml
 from sklearn.metrics import roc_auc_score, average_precision_score
 
 
+# GazeFollow calculates AUC using original image size with GT (x,y) coordinates set to 1 and everything else as 0
+# References:
+# https://github.com/ejcgt/attention-target-detection/blob/acd264a3c9e6002b71244dea8c1873e5c5818500/eval_on_gazefollow.py#L78
+# https://github.com/ejcgt/attention-target-detection/blob/acd264a3c9e6002b71244dea8c1873e5c5818500/utils/imutils.py#L67
+# https://github.com/ejcgt/attention-target-detection/blob/acd264a3c9e6002b71244dea8c1873e5c5818500/utils/evaluation.py#L7
+def gazefollow_auc(heatmap, gt_gazex, gt_gazey, height, width):
+    target_map = np.zeros((height, width))
+    for point in zip(gt_gazex, gt_gazey):
+        if point[0] >= 0:
+            x, y = map(int, [point[0] * float(width), point[1] * float(height)])
+            x = min(x, width - 1)
+            y = min(y, height - 1)
+            target_map[y, x] = 1
+    resized_heatmap = torch.nn.functional.interpolate(heatmap.unsqueeze(dim=0).unsqueeze(dim=0), (height, width),
+                                                      mode='bilinear').squeeze()
+    auc = roc_auc_score(target_map.flatten(), resized_heatmap.cpu().flatten())
+
+    return auc
+
+
+# Reference: https://github.com/ejcgt/attention-target-detection/blob/acd264a3c9e6002b71244dea8c1873e5c5818500/eval_on_gazefollow.py#L81
+def gazefollow_l2(heatmap, gt_gazex, gt_gazey):
+    argmax = heatmap.flatten().argmax().item()
+    pred_y, pred_x = np.unravel_index(argmax, (64, 64))
+    pred_x = pred_x / 64.
+    pred_y = pred_y / 64.
+
+    gazex = np.array(gt_gazex)
+    gazey = np.array(gt_gazey)
+
+    avg_l2 = np.sqrt((pred_x - gazex.mean()) ** 2 + (pred_y - gazey.mean()) ** 2)
+    all_l2s = np.sqrt((pred_x - gazex) ** 2 + (pred_y - gazey) ** 2)
+    min_l2 = all_l2s.min().item()
+
+    return avg_l2, min_l2
+
+
 # VideoAttentionTarget calculates AUC on 64x64 heatmap, defining a rectangular tolerance region of 6*(sigma=3) + 1 (uses 2D Gaussian code but binary thresholds > 0 resulting in rectangle)
 # References:
 # https://github.com/ejcgt/attention-target-detection/blob/acd264a3c9e6002b71244dea8c1873e5c5818500/eval_on_videoatttarget.py#L106
@@ -74,3 +111,33 @@ def eval_metrics(config, model, test_loader, device):
 
     return AUC, L2_mean, AP
 
+
+@torch.no_grad()
+def eval_pretrain_gazefollow(config, model, test_loader, device):
+
+    aucs = []
+    min_l2s = []
+    avg_l2s = []
+
+    for _, (images, bboxes, gazex, gazey, height, width) in tqdm(enumerate(test_loader), desc="Evaluating",
+                                                                 total=len(test_loader)):
+        preds = model.forward({"images": images.to(device), "bboxes": bboxes})
+
+        # eval each instance (head)
+        # in our preprocessed GazeFollow, there is 1 head per image
+        j = 0
+        for i in range(images.shape[0]):
+            auc = gazefollow_auc(preds['heatmap'][i][j], gazex[i][j], gazey[i][j], height[i], width[i])
+            avg_l2, min_l2 = gazefollow_l2(preds['heatmap'][i][j], gazex[i][j], gazey[i][j])
+            aucs.append(auc)
+            avg_l2s.append(avg_l2)
+            min_l2s.append(min_l2)
+
+    auc = np.array(aucs).mean()
+    meanl2 = np.array(avg_l2s).mean()
+    minl2 = np.array(min_l2s).mean()
+    print("AUC: {}".format(auc))
+    print("Avg L2: {}".format(meanl2))
+    print("Min L2: {}".format(minl2))
+
+    return auc, meanl2, minl2
