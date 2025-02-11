@@ -69,15 +69,15 @@ def get_coordinates(text, mode='eye'):
 
 
 def main(root_path):
-    df_test = pd.read_parquet(
-        hf_hub_download(repo_id=REPO_ID, filename=TESTFILE, repo_type="dataset")
-    )
+    #df_test = pd.read_parquet(
+    #    hf_hub_download(repo_id=REPO_ID, filename=TESTFILE, repo_type="dataset")
+    #)
 
     df_train = pd.read_parquet(
         hf_hub_download(repo_id=REPO_ID, filename=TRAINFILE, repo_type="dataset")
     )
 
-    print(df_train.head())
+    #print(df_test.head())
 
     # preprocess TRAIN split
     frames = []
@@ -149,6 +149,7 @@ def main(root_path):
     print("Complete preprocessing {} train samples".format(id))
     with open(os.path.join(root_path, "train_preprocessed.json"), "w") as out_file:
         json.dump(frames, out_file)
+    '''
 
     # preprocess TEST split
     # columns: ['images', 'texts']
@@ -218,10 +219,13 @@ def main(root_path):
 
             pre_image = image
             pre_eye_cent = eye_cent
-
+            del image
+            
+    # Total test split size = 2815
     print("Complete preprocessing {} TOTAL samples".format(id))
     with open(os.path.join(root_path, "test_preprocessed.json"), "w") as out_file:
         json.dump(frames, out_file)
+    '''
 
 
 if __name__ == "__main__":
