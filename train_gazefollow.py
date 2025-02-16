@@ -56,17 +56,17 @@ def evaluate(config, model, val_loader, device):
     with tqdm(total=val_total) as pbar:
         for images, bboxes, gazex, gazey, h, w in val_loader:
 
-            preds = model({"images": images.to(device), "bboxes": bboxes})
+            preds = model({"images": images.to(device), "bboxes": [bboxes]})
 
             # preds = a dict of{'heatmap': list of Batch_size*tensor[head_count, 64, 64],
             #                   'inout': list of Batch_size*tensor[head_count,] }
 
             regression_preds = []
             for b in range(0, images.shape[0]):
-                head_count = preds['heatmap'][b].shape[0]
+                head_count = 1
                 xy_list = torch.empty((head_count, 2))
                 for head_idx in range(0, head_count):
-                    heatmap_tensor = preds['heatmap'][b][head_idx].clone()
+                    heatmap_tensor = preds['heatmap'][head_idx][b].clone()
                     # convert pred_heatmap to (x, y) loc
                     argmax = heatmap_tensor.flatten().argmax().item()
                     pred_y, pred_x = np.unravel_index(argmax, (64, 64))
@@ -81,7 +81,7 @@ def evaluate(config, model, val_loader, device):
                 heads = len(gtxs)
                 gt_per_img = torch.empty((heads, 2))
                 for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
-                    gt_per_img[i] = torch.tensor([gtx[0], gty[0]], dtype=torch.float32)
+                    gt_per_img[i] = torch.tensor([gtx, gty], dtype=torch.float32)
                 gt_gaze_xy.append(gt_per_img)
 
             loss = val_mse_loss(torch.cat(regression_preds, dim=0), torch.cat(gt_gaze_xy, dim=0))
@@ -126,7 +126,7 @@ def main():
 
     # Verify the freezing and initialization
     for name, param in model.named_parameters():
-        print(f"{name}: requires_grad={param.requires_grad}")
+        #print(f"{name}: requires_grad={param.requires_grad}")
         pass
 
     model.to(device)
@@ -215,21 +215,22 @@ def main():
         for batch, (images, bboxes, gazex, gazey, h, w) in tqdm(enumerate(train_loader), total=len(train_loader)):
 
             # forward pass
-            preds = model({"images": images.to(device), "bboxes": bboxes})
+            preds = model({"images": images.to(device), "bboxes": [bboxes]})
 
-            # preds = a dict of{'heatmap': list of Batch_size*tensor[head_count, 64, 64],
-            #                   'inout': list of Batch_size*tensor[head_count,] }
+            # preds = a dict of{'heatmap': list of head_count *tensor[Batch_size, 64, 64],
+            #                   'inout': list of head_count *tensor[Batch_size,] }
 
             regression_preds = []
             # convert pred_heatmap to (x, y) loc
             for b in range(0, images.shape[0]):
+                # len(preds['heatmap'] === 1)
                 # for GazeFollow, head_count should always be 1 (?!)
-                head_count = preds['heatmap'][b].shape[0]
+                head_count = 1
                 #assert head_count == 1
                 xy_list = torch.empty((head_count, 2))
 
                 for head_idx in range(0, head_count):
-                    heatmap_tensor = preds['heatmap'][b][head_idx].clone()
+                    heatmap_tensor = preds['heatmap'][head_count][b].clone()
 
                     argmax = heatmap_tensor.flatten().argmax().item()
                     pred_y, pred_x = np.unravel_index(argmax, (64, 64))
@@ -250,7 +251,7 @@ def main():
                 gt_per_img = torch.empty((heads, 2))
                 # for GazeFollow, len should always be 1 (?!), so gtxs is no list ??
                 for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
-                    gt_per_img[i] = torch.tensor([gtx[0], gty[0]], dtype=torch.float32)
+                    gt_per_img[i] = torch.tensor([gtx, gty], dtype=torch.float32)
                 gt_gaze_xy.append(gt_per_img)
 
             # print(len(gt_gaze_xy), gt_gaze_xy[0])
