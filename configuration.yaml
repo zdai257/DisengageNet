@@ -65,7 +65,7 @@ train:
   # GazeFollow pretrain params
   pre_lr: 0.001
   pre_batch_size: 32   # 60
-  pre_epochs: 15
+  pre_epochs: 30   # 15
   pre_optimizer: "Adam"
   pre_lr_scheduler:
     type: "cosine"                  # cosine / linear

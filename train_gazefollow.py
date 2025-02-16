@@ -164,7 +164,8 @@ def main():
     # RandomCrop + flip + BBox Jitter (?)
     transform_list = []
     transform_list.append(transforms.RandomResizedCrop((input_resolution, input_resolution)))
-    transform_list.append(transforms.RandomHorizontalFlip(0.5))
+    # TODO: deal with flipped bbox labels
+    # transform_list.append(transforms.RandomHorizontalFlip(0.5))
     transform_list.append(transforms.ToTensor())
     transform_list.append(transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
     my_transform = transforms.Compose(transform_list)
@@ -316,7 +317,7 @@ def main():
         auc, meanl2, minl2 = eval_pretrain_gazefollow(config, model, test_loader, device)
 
         best_checkpoint = os.path.join(config['logging']['pre_dir'],
-                                       f"Best_model_ep{bst_ep}_l2{int(l2 * 100)}_ap{int(ap * 100)}.pt")
+                                       f"Best_model_ep{bst_ep}_l2{int(meanl2 * 100)}_loss{int(best_loss * 100)}.pt")
         torch.save({
             'model_state_dict': model.state_dict(),
             'loss': bst_loss,
