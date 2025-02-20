@@ -121,7 +121,10 @@ def main():
     #TODO: my_net
     #my_net = get_gt360_model(config)
     model, gazelle_transform = get_gazelle_model(config)
-    model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True),
+    # load a pre-trained model
+    #model.load_state_dict(torch.load(config['model']['pretrained_path'], map_location=device, weights_only=True))
+    # load from public pre-trained
+    model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'],  weights_only=True, map_location=device), 
                                   include_backbone=False)
 
     # Freeze 'backbone' parameters

@@ -1,18 +1,13 @@
 # General Configuration
 model:
   name: "gazelle_dinov2_vitl14_inout"
-  pretrained_path: "gazelle_dinov2_vitl14_inout.pt"
+  pretrained_path: "best_epoch_15.pt"  #"gazelle_dinov2_vitl14_inout.pt"
   bce_weight: 1.0
-  mse_weight: 2.0
+  mse_weight: 1.0
   encoder:
     type: "DINOv2"                  # Pretrained image encoder (DINOv2, CLIP, etc.)
     pretrained: true                # Use pretrained weights
-    checkpoint: "path/to/encoder.pth"  # Path to encoder checkpoint (if required)
     input_size: 224                 # Input image size
-  head:
-    type: "ResNet"                  # Head type (ResNet, FasterRCNN, OpenFace, etc.)
-    pretrained: true                # Use pretrained weights for head
-    checkpoint: "path/to/head.pth"  # Path to head checkpoint (if required)
   decoder:
     type: "ViT"                     # Decoder type (ViT, transformer-like)
     hidden_size: 512                # Hidden size of the decoder
@@ -23,13 +18,6 @@ model:
     activation: "gelu"              # Activation function (relu, gelu, leaky_relu)
     output_size: 128                # Dimension of decoder output features
 
-multi_head_output:
-  gaze_target_location: true        # Predict gazed target location in-frame
-  out_of_frame_vector: true         # Predict out-of-frame vector
-  eye_contact_classifier: true      # Binary classification for eye contact
-  hidden_size: 256                  # Hidden size for multi-head layers
-  dropout: 0.2                      # Dropout rate for multi-head outputs
-
 data:
   input_resolution: 448
   train_path: "./VAT"     # Path to preprocessed training dataset
@@ -38,23 +26,13 @@ data:
   std: [0.229, 0.224, 0.225]        # Normalization std for images (ImageNet values)
   pre_train_path: "./GazeFollow"
   pre_test_path: "./GazeFollow"
-  augmentations:                    # Data augmentation settings
-    horizontal_flip: true
-    vertical_flip: false
-    random_crop: true
-    rotation: 15                   # Rotation in degrees
-    color_jitter:                  # Jitter settings (brightness, contrast, etc.)
-      brightness: 0.2
-      contrast: 0.2
-      saturation: 0.2
-      hue: 0.1
 
 train:
-  batch_size: 32                    # Batch size for training
-  epochs: 30                    # Number of training epochs
-  lr: 0.00004                         # Base learning rate
-  inout_lr: 0.001
-  optimizer: "AdamW"                # Optimizer type (adam, adamw, sgd, etc.)
+  batch_size: 12                    # Batch size for training
+  epochs: 10                    # Number of training epochs
+  lr: 0.00001                         # Base learning rate
+  inout_lr: 0.01
+  optimizer: "Adam"                # Optimizer type (adam, adamw, sgd, etc.)
   weight_decay: 0.01                # Weight decay for optimizer
   lr_scheduler:                     # Learning rate scheduler settings
     type: "cosine"                  # cosine / linear
@@ -85,11 +63,11 @@ inference:
   checkpoint: "gazelle_dinov2_vitl14_inout.pt"
 
 logging:
-  log_dir: "results/checkpoints0/"          # Directory to save logs
+  log_dir: "results/checkpoints0/"
   pre_dir: "results/prechecks0/"
   save_every: 5
 
 hardware:
-  device: "cuda:2"                    # Device to use (cuda, cpu)
+  device: "cuda"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading
