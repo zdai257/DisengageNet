@@ -233,13 +233,13 @@ def main():
                 xy_list = torch.empty((head_count, 2))
 
                 for head_idx in range(0, head_count):
-                    heatmap_tensor = preds['heatmap'][head_count][b].clone()
+                    heatmap_tensor = preds['heatmap'][head_idx][b].clone()
 
                     argmax = heatmap_tensor.flatten().argmax().item()
                     pred_y, pred_x = np.unravel_index(argmax, (64, 64))
                     pred_x = pred_x / 64.
                     pred_y = pred_y / 64.
-                    xy_list[head_idx] = torch.tensor([float(pred_x), float(pred_y)])
+                    xy_list[head_idx] = torch.tensor([float(pred_x), float(pred_y)], requires_grad=True)
 
                 regression_preds.append(xy_list)  # a list of Batch*[heads * (2,) ]
 
