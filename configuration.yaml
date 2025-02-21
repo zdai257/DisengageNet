@@ -1,7 +1,7 @@
 # General Configuration
 model:
   name: "gazelle_dinov2_vitl14_inout"
-  pretrained_path: "best_epoch_15.pt"  #"gazelle_dinov2_vitl14_inout.pt"
+  pretrained_path: "gazelle_dinov2_vitl14_inout.pt"
   bce_weight: 1.0
   mse_weight: 1.0
   encoder:
@@ -42,8 +42,8 @@ train:
   gradient_clipping: 5.0            # Gradient clipping threshold
   # GazeFollow pretrain params
   pre_lr: 0.001
-  pre_batch_size: 32   # 60
-  pre_epochs: 30   # 15
+  pre_batch_size: 64   # 60
+  pre_epochs: 15   # 15
   pre_optimizer: "Adam"
   pre_lr_scheduler:
     type: "cosine"                  # cosine / linear
@@ -64,10 +64,10 @@ inference:
 
 logging:
   log_dir: "results/checkpoints0/"
-  pre_dir: "results/prechecks0/"
+  pre_dir: "results/prechecks2/"
   save_every: 5
 
 hardware:
-  device: "cuda"                    # Device to use (cuda, cpu)
+  device: "cuda:2"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading

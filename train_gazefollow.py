@@ -106,8 +106,8 @@ def main():
     # TODO: my_net
     # my_net = get_gt360_model(config)
     model, gazelle_transform = get_gazelle_model(config)
-    model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True),
-                                  include_backbone=False)
+    #model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True),
+    #                              include_backbone=False)
 
     # Freeze 'backbone' parameters
     for name, param in model.named_parameters():
@@ -170,6 +170,8 @@ def main():
     transform_list.append(transforms.ToTensor())
     transform_list.append(transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
     my_transform = transforms.Compose(transform_list)
+
+    my_transform = gazelle_transform
 
     # apply my_transform
     train_dataset = GazeFollow(root_path=config['data']['pre_train_path'],
