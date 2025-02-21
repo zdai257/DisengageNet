@@ -1,0 +1,38 @@
+import os
+from os.path import join
+import numpy as np
+import pandas as pd
+import torch
+from torchvision import transforms
+from torchvision.transforms import Compose, ToTensor
+from PIL import Image
+import yaml
+import json
+from EYEDIAP.EYEDIAP.Scripts.EYEDIAP_misc import *
+
+
+EYEDIAP_path = 'EYEDIAP/EYEDIAP'
+
+def read_gaze_track_file(gaze_track_file):
+    """
+    Read the estimated 3D gaze track
+    """
+    gaze_track_vals = np.loadtxt(gaze_track_file, skiprows=1, delimiter=';')[:,1:]
+    # The gaze track_vals is composed of, gaze_vector_left, gaze_origin_left, gaze_vector_right, gaze_origin_right
+    gaze_track_params = ((gaze_track_vals[:,:3], gaze_track_vals[:,3:6]), (gaze_track_vals[:,6:9], gaze_track_vals[:,9:12]))
+    return gaze_track_params
+
+def read_ball_track_file(session_str):
+    """
+    Read the ground truth values, i.e. the 3D position of the floating target
+    """
+    ball_track_file = os.path.join(EYEDIAP_path, 'Data', session_str, 'ball_tracking.txt')
+    ball_track_vals = np.loadtxt(ball_track_file, skiprows=1, delimiter=';')[:,-3:]
+    return ball_track_vals
+
+
+print(sessions)
+
+data_path = '8_A_FT_S'
+ball_vals = read_ball_track_file(data_path)
+print(ball_vals, ball_vals.shape)

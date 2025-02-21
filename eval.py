@@ -121,7 +121,7 @@ def eval_pretrain_gazefollow(config, model, test_loader, device):
 
     for _, (images, bboxes, gazex, gazey, height, width) in tqdm(enumerate(test_loader), desc="Evaluating",
                                                                  total=len(test_loader)):
-        preds = model.forward({"images": images.to(device), "bboxes": bboxes})
+        preds = model.forward({"images": images.to(device), "bboxes": [bboxes]})
 
         # eval each instance (head)
         # in our preprocessed GazeFollow, there is 1 head per image
