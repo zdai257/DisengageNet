@@ -109,6 +109,11 @@ def main():
     #model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True),
     #                              include_backbone=False)
 
+    # Verify the freezing and initialization
+    for name, param in model.named_parameters():
+        #print(f"{name}: requires_grad={param.requires_grad}")
+        pass
+
     # Freeze 'backbone' parameters
     for name, param in model.named_parameters():
         if 'backbone' in name:

@@ -1,12 +1,14 @@
+import os
+os.environ["XFORMERS_DISABLE_MEMORY_EFFICIENT_ATTENTION"] = "1"
+from os.path import join
+import sys
 import torch
 import torch.nn.functional as F
 from torchvision import transforms
 import numpy as np
 from PIL import Image, ImageDraw
 import dlib
-import os
-from os.path import join
-import sys
+
 from network.network_builder import get_gazelle_model
 from network.ec_network_builder import get_ec_model
 from ec_inference import drawrect
@@ -24,11 +26,12 @@ if not os.path.isfile(PREDICTOR_PATH):
 
 
 class DemoSys():
-    def __init__(self, model_ec=MODEL_WEIGHTS, model_gt='./', facedetect=None, gazedetect='OpenFace'):
+    def __init__(self, model_ec=MODEL_WEIGHTS, model_gt="gazelle_dinov2_vitl14_inout.pt", facedetect=None, gazedetect='OpenFace'):
         config = {'model': {}}
         config['model']['name'] = "gazelle_dinov2_vitl14_inout"
-        self.device = 'cpu'
-        config = {'device': {'hardware': self.device}}
+
+        self.device = 'cuda'
+        config['hardware'] = {'device': self.device}
 
         self.test_transforms = transforms.Compose([transforms.Resize(224), transforms.CenterCrop(224), transforms.ToTensor(),
                                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
@@ -51,7 +54,7 @@ class DemoSys():
 
         # load IFT/OFT detector
         model, transform = get_gazelle_model(config)
-        model.load_gazelle_state_dict(torch.load("gazelle_dinov2_vitl14_inout.pt", weights_only=True))
+        model.load_gazelle_state_dict(torch.load(model_gt, weights_only=True))
         self.model_gt = model
         self.gt_transform = transform
 
@@ -62,9 +65,11 @@ class DemoSys():
         frame = Image.open(input_data).convert("RGB")
 
         # resize image
-        frame = frame.resize((448, 448))
+        frame.thumbnail((896, 896))
+        print(frame.width, frame.height)
 
         with torch.no_grad():
+            
             ec_prob, bboxes = self.ec_infer(frame)
 
             outcome = {}
@@ -78,6 +83,8 @@ class DemoSys():
                     outcome[bbox] = 1
 
             if len(bbox_lst) > 0:
+                # access prediction for first person in first image. Tensor of size [64, 64]
+                # in/out of frame score (1 = in frame) (output["inout"] will be None  for non-inout models)
                 preds = self.gt_infer(frame, bbox_lst, self.gt_transform)
 
                 for i in range(len(bbox_lst)):  # per head
@@ -93,6 +100,8 @@ class DemoSys():
         bbox = []
         scores = []
         dets = self.cnn_face_detector(np.array(frame), 1)
+        # fail to detect face if frame-aspect-ratio distorted
+        #print(dets)
 
         for d in dets:
             l = d.rect.left()
@@ -138,9 +147,6 @@ class DemoSys():
         }
         
         output = self.model_gt(input)
-        
-        predicted_heatmap = output["heatmap"][0][0]        # access prediction for first person in first image. Tensor of size [64, 64]
-        predicted_inout = output["inout"][0][0]            # in/out of frame score (1 = in frame) (output["inout"] will be None  for non-inout models)
         return output
 
 
@@ -148,7 +154,10 @@ if __name__ == "__main__":
     
     demo = DemoSys()
 
-    img_path = "data/0028_2m_-15P_10V_5H.jpg"
+    #img_path = "data/WALIexample0.png"
+    #img_path = "data/joye.jpg"
+    img_path = "data/0018_2m_15P_0V_0H.jpg"
 
-    demo.conditional_inference(img_path)
-    
+    outcomes = demo.conditional_inference(img_path)
+
+    print(outcomes)
