@@ -163,7 +163,8 @@ def main():
     # transform
     # RandomCrop + flip + BBox Jitter (?)
     transform_list = []
-    transform_list.append(transforms.RandomResizedCrop((input_resolution, input_resolution)))
+    transform_list.append(transforms.Resize(input_resolution))
+    #transform_list.append(transforms.RandomResizedCrop((input_resolution, input_resolution)))
     # TODO: deal with flipped bbox labels
     # transform_list.append(transforms.RandomHorizontalFlip(0.5))
     transform_list.append(transforms.ToTensor())
