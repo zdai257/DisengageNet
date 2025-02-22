@@ -54,7 +54,7 @@ def evaluate(config, model, val_loader, device):
     model.eval()
 
     bce_loss = torch.nn.BCELoss(reduction='sum')
-    pbce_loss = torch.nn.BCEWithLogitsLoss()
+    pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="sum")
     validation_loss = 0.0
     val_total = len(val_loader)
 
@@ -221,7 +221,7 @@ def main():
 
     bce_loss = torch.nn.BCELoss(reduction='sum')  # Binary Cross-Entropy Loss
     # Pixel wise binary CrossEntropy loss
-    pbce_loss = torch.nn.BCEWithLogitsLoss()
+    pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="sum")
 
     # save dir for checkpoints
     os.makedirs(config['logging']['log_dir'], exist_ok=True)

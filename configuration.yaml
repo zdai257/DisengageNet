@@ -42,7 +42,7 @@ train:
   gradient_clipping: 5.0            # Gradient clipping threshold
   # GazeFollow pretrain params
   pre_lr: 0.01
-  pre_batch_size: 64   # 60
+  pre_batch_size: 60   # 60
   pre_epochs: 15   # 15
   pre_optimizer: "Adam"
   pre_lr_scheduler:
@@ -64,7 +64,7 @@ inference:
 
 logging:
   log_dir: "results/checkpoints0/"
-  pre_dir: "results/prechecks2/"
+  pre_dir: "results/prechecks5/"
   save_every: 5
 
 hardware:

@@ -1,5 +1,6 @@
 import argparse
 import torch
+import torch.nn.functional as F
 from torch.optim import RMSprop, Adam, AdamW
 from torch.optim.lr_scheduler import StepLR
 from torchvision import transforms
@@ -202,7 +203,7 @@ def main():
 
     #mse_loss = torch.nn.MSELoss(reduction='sum')  # Mean Squared Error Loss
     # Pixel wise binary CrossEntropy loss
-    pbce_loss = torch.nn.BCEWithLogitsLoss()
+    pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="sum")
 
     # save dir for checkpoints
     os.makedirs(config['logging']['pre_dir'], exist_ok=True)
@@ -247,6 +248,7 @@ def main():
             # Backpropagation and optimization
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Clip exploding gradients
             optimizer.step()
 
             # Accumulate loss for reporting
