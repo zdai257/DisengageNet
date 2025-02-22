@@ -52,9 +52,9 @@ def collate(batch):
 @torch.no_grad()
 def evaluate(config, model, val_loader, device):
     model.eval()
-    batch_size = config['eval']['batch_size']
-    val_bce_loss = torch.nn.BCELoss(reduction='sum')
-    val_mse_loss = torch.nn.MSELoss(reduction='sum')
+
+    bce_loss = torch.nn.BCELoss(reduction='sum')
+    pbce_loss = torch.nn.BCEWithLogitsLoss()
     validation_loss = 0.0
     val_total = len(val_loader)
 
@@ -66,39 +66,41 @@ def evaluate(config, model, val_loader, device):
             # preds = a dict of{'heatmap': list of Batch_size*tensor[head_count, 64, 64],
             #                   'inout': list of Batch_size*tensor[head_count,] }
 
-            classification_preds, regression_preds = [], []
-            for b in range(0, images.shape[0]):
-                head_count = preds['inout'][b].shape[0]
-                inout_list, xy_list = torch.empty((head_count,)), torch.empty((head_count, 2))
-                for head_idx in range(0, head_count):
-                    inout_list[head_idx] = preds['inout'][b][head_idx].clone()
-                    heatmap_tensor = preds['heatmap'][b][head_idx].clone()
-                    # convert pred_heatmap to (x, y) loc
-                    argmax = heatmap_tensor.flatten().argmax().item()
-                    pred_y, pred_x = np.unravel_index(argmax, (64, 64))
-                    pred_x = pred_x / 64.
-                    pred_y = pred_y / 64.
-                    xy_list[head_idx] = torch.tensor([float(pred_x), float(pred_y)])
+            pred_inout = preds['inout']
+            pred_inouts = torch.cat(pred_inout, 0)
 
-                classification_preds.append(inout_list)  # a list of Batch*[heads * <val> ]
-                regression_preds.append(xy_list)  # a list of Batch*[heads * (2,) ]
+            pred_heatmap = preds['heatmap']
+            # stack all N*heads onto Batch dim: (N, 64, 64)
+            pred_heatmaps = torch.cat(pred_heatmap, 0)
 
-            gt_gaze_xy = []
+            gt_heatmaps = []
             for gtxs, gtys in zip(gazex, gazey):
                 heads = len(gtxs)
-                gt_per_img = torch.empty((heads, 2))
+                # for VAT, gazex/y is a list of BatchSize * [Heads * [norm_val] ]
+                gt_heatmap = []
                 for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
-                    gt_per_img[i] = torch.tensor([gtx[0], gty[0]], dtype=torch.float32)
-                gt_gaze_xy.append(gt_per_img)
+                    a_heatmap = torch.zeros((64, 64))
+                    x_grid = int(gtx * 63)
+                    y_grid = int(gty * 63)
 
-            gt_inout = []
-            for i in range(len(inout)):
-                gt_inout.append(torch.tensor(inout[i], dtype=torch.float32))
+                    a_heatmap[y_grid, x_grid] = 1
+                    gt_heatmap.append(a_heatmap)
 
-            total_bce_loss = val_bce_loss(torch.cat(classification_preds, dim=0), torch.cat(gt_inout, dim=0))
-            total_mse_loss = val_mse_loss(torch.cat(regression_preds, dim=0), torch.cat(gt_gaze_xy, dim=0))
+                gt_heatmaps.append(torch.stach(gt_heatmap))
 
-            total_loss = config['model']['bce_weight'] * total_bce_loss + config['model']['mse_weight'] * total_mse_loss
+            gt_heatmaps = torch.cat(gt_heatmaps)
+
+            # regress loss
+            total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps)
+
+            # classification loss
+            total_loss0 = bce_loss(pred_inouts, torch.stack(inout))
+
+            # hide MSE lose when out-of-frame
+            inout_mask = torch.tensor(float(inout == 1), dtype=torch.float32)
+            total_loss1 = total_pbce_loss * inout_mask.squeeze()
+
+            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1
             validation_loss += total_loss.item()
 
             pbar.update(1)
@@ -118,8 +120,7 @@ def main():
     lr = config['train']['lr']
     num_epochs = config['train']['epochs']
 
-    #TODO: my_net
-    #my_net = get_gt360_model(config)
+    # select Network
     model, gazelle_transform = get_gazelle_model(config)
     # load a pre-trained model
     #model.load_state_dict(torch.load(config['model']['pretrained_path'], map_location=device, weights_only=True))
@@ -219,7 +220,8 @@ def main():
     train_length = train_dataset.__len__()
 
     bce_loss = torch.nn.BCELoss(reduction='sum')  # Binary Cross-Entropy Loss
-    mse_loss = torch.nn.MSELoss(reduction='sum')  # Mean Squared Error Loss
+    # Pixel wise binary CrossEntropy loss
+    pbce_loss = torch.nn.BCEWithLogitsLoss()
 
     # save dir for checkpoints
     os.makedirs(config['logging']['log_dir'], exist_ok=True)
@@ -251,58 +253,52 @@ def main():
 
             # preds = a dict of{'heatmap': list of Batch_size*tensor[head_count, 64, 64],
             #                   'inout': list of Batch_size*tensor[head_count,] }
+            # ? should be head_count * tensor[Batch_size, ]
 
-            classification_preds, regression_preds = [], []
-            for b in range(0, images.shape[0]):
-                head_count = preds['inout'][b].shape[0]
-                inout_list, xy_list = torch.empty((head_count,)), torch.empty((head_count, 2))
-                for head_idx in range(0, head_count):
-                    inout_list[head_idx] = preds['inout'][b][head_idx].clone()
-                    heatmap_tensor = preds['heatmap'][b][head_idx].clone()
-                    # convert pred_heatmap to (x, y) loc
-                    argmax = heatmap_tensor.flatten().argmax().item()
-                    pred_y, pred_x = np.unravel_index(argmax, (64, 64))
-                    pred_x = pred_x / 64.
-                    pred_y = pred_y / 64.
-                    xy_list[head_idx] = torch.tensor([float(pred_x), float(pred_y)])
-
-                classification_preds.append(inout_list)  # a list of Batch*[heads * <val> ]
-                regression_preds.append(xy_list)  # a list of Batch*[heads * (2,) ]
-
-            #print(len(preds['heatmap']), preds['heatmap'][0].shape)
-            #print(len(preds['inout']), preds['inout'][0].shape)
+            print(len(preds['heatmap']), preds['heatmap'][0].shape)
+            print(len(preds['inout']), preds['inout'][0].shape)
             # GT = a list of Batch*[head_count*[pixel_norm ] ]
-            #print(len(gazex), gazex[0])
-            #print(len(inout), inout[0])
+            print(len(gazex), gazex[0])
+            print(len(inout), inout[0])
 
-            gt_gaze_xy = []
+            pred_inout = preds['inout']
+            pred_inouts = torch.cat(pred_inout, 0)
+
+            pred_heatmap = preds['heatmap']
+            # stack all N*heads onto Batch dim: (N, 64, 64)
+            pred_heatmaps = torch.cat(pred_heatmap, 0)
+
+            gt_heatmaps = []
             for gtxs, gtys in zip(gazex, gazey):
                 heads = len(gtxs)
-                gt_per_img = torch.empty((heads, 2))
+                # for VAT, gazex/y is a list of BatchSize * [Heads * [norm_val] ]
+                gt_heatmap = []
                 for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
-                    gt_per_img[i] = torch.tensor([gtx[0], gty[0]], dtype=torch.float32)
-                gt_gaze_xy.append(gt_per_img)
+                    a_heatmap = torch.zeros((64, 64))
+                    x_grid = int(gtx * 63)
+                    y_grid = int(gty * 63)
 
-            #print(len(gt_gaze_xy), gt_gaze_xy[0])
-            #print(len(regression_preds), regression_preds[0])
-            #print(len(classification_preds), classification_preds[0])
-            #print(len(inout), inout[0])
-            gt_inout = []
-            for i in range(len(inout)):
-                gt_inout.append(torch.tensor(inout[i], dtype=torch.float32))
+                    a_heatmap[y_grid, x_grid] = 1
+                    gt_heatmap.append(a_heatmap)
 
-            # Iterate over the batch
-            # Compute BCE loss for this sample (classification)
-            total_bce_loss = bce_loss(torch.cat(classification_preds, dim=0), torch.cat(gt_inout, dim=0))
+                gt_heatmaps.append(torch.stach(gt_heatmap))
+
+            gt_heatmaps = torch.cat(gt_heatmaps)
+
+            print(pred_heatmaps.shape, gt_heatmaps.shape)
+            print(pred_inouts.shape, len(inout))
+            # regress loss
+            total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps)
+
+            # classification loss
+            total_loss0 = bce_loss(pred_inouts, torch.stack(inout))
 
             # hide MSE lose when out-of-frame
-            inout_mask = torch.tensor(float(gt_inout == 1), dtype=torch.float32)
-
-            total_mse_loss = mse_loss(torch.cat(regression_preds, dim=0), torch.cat(gt_gaze_xy, dim=0))
-            total_mse_loss = total_mse_loss * inout_mask.squeeze()
+            inout_mask = torch.tensor(float(inout == 1), dtype=torch.float32)
+            total_loss1 = total_pbce_loss * inout_mask.squeeze()
 
 
-            total_loss = config['model']['bce_weight'] * total_bce_loss + config['model']['mse_weight'] * total_mse_loss
+            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1
         
             # Backpropagation and optimization
             optimizer.zero_grad()
@@ -314,13 +310,13 @@ def main():
 
         scheduler.step()
 
-        mean_ep_loss = epoch_loss / train_length
+        mean_ep_loss = epoch_loss / len(train_loader)
         # Print epoch loss
-        print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {mean_ep_loss:.4f}")
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {mean_ep_loss:.7f}")
 
         val_loss = evaluate(config, model, test_loader, device)
 
-        print(f"Epoch [{epoch + 1}/{num_epochs}], Validation Loss: {val_loss:.4f}")
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Validation Loss: {val_loss:.7f}")
 
         # Save model every 5 epochs
         if (epoch + 1) % config['logging']['save_every'] == 0:

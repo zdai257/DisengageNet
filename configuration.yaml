@@ -41,7 +41,7 @@ train:
     min_lr: 1e-6                    # Minimum learning rate for cosine/other schedulers
   gradient_clipping: 5.0            # Gradient clipping threshold
   # GazeFollow pretrain params
-  pre_lr: 0.001
+  pre_lr: 0.01
   pre_batch_size: 64   # 60
   pre_epochs: 15   # 15
   pre_optimizer: "Adam"

@@ -198,7 +198,7 @@ def main():
         pin_memory=config['hardware']['pin_memory']
     )
 
-    train_length = train_dataset.__len__()
+    #train_length = train_dataset.__len__()
 
     #mse_loss = torch.nn.MSELoss(reduction='sum')  # Mean Squared Error Loss
     # Pixel wise binary CrossEntropy loss
@@ -254,13 +254,13 @@ def main():
 
         scheduler.step()
 
-        mean_ep_loss = epoch_loss / train_length
+        mean_ep_loss = epoch_loss / len(train_loader)
         # Print epoch loss
-        print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {mean_ep_loss:.4f}")
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {mean_ep_loss:.7f}")
 
         val_loss = evaluate(config, model, test_loader, device)
 
-        print(f"Epoch [{epoch + 1}/{num_epochs}], Validation Loss: {val_loss:.4f}")
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Validation Loss: {val_loss:.7f}")
 
         # Save model every 5 epochs
         if (epoch + 1) % config['logging']['save_every'] == 0:
