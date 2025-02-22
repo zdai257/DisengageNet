@@ -49,7 +49,8 @@ def collate(batch):
 def evaluate(config, model, val_loader, device):
     model.eval()
     batch_size = config['eval']['batch_size']
-    val_mse_loss = torch.nn.MSELoss(reduction='sum')
+
+    val_pbce_loss = torch.nn.BCEWithLogitsLoss()
     validation_loss = 0.0
     val_total = len(val_loader)
 
@@ -61,30 +62,24 @@ def evaluate(config, model, val_loader, device):
             # preds = a dict of{'heatmap': list of Batch_size*tensor[head_count, 64, 64],
             #                   'inout': list of Batch_size*tensor[head_count,] }
 
-            regression_preds = []
-            for b in range(0, images.shape[0]):
-                head_count = 1
-                xy_list = torch.empty((head_count, 2))
-                for head_idx in range(0, head_count):
-                    heatmap_tensor = preds['heatmap'][head_idx][b].clone()
-                    # convert pred_heatmap to (x, y) loc
-                    argmax = heatmap_tensor.flatten().argmax().item()
-                    pred_y, pred_x = np.unravel_index(argmax, (64, 64))
-                    pred_x = pred_x / 64.
-                    pred_y = pred_y / 64.
-                    xy_list[head_idx] = torch.tensor([float(pred_x), float(pred_y)])
-
-                regression_preds.append(xy_list)  # a list of Batch*[heads * (2,) ]
+            pred_heatmap = preds['heatmap'][0]
 
             gt_gaze_xy = []
             for gtxs, gtys in zip(gazex, gazey):
-                heads = len(gtxs)
-                gt_per_img = torch.empty((heads, 2))
+                batch_size0 = len(gtxs)
+                # for GazeFollow, len should always be 1 (?!), so gtxs is no list ??
                 for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
-                    gt_per_img[i] = torch.tensor([gtx, gty], dtype=torch.float32)
-                gt_gaze_xy.append(gt_per_img)
+                    gt_heatmap = torch.zeros((64, 64))
+                    x_grid = int(gtx * 63)
+                    y_grid = int(gty * 63)
 
-            loss = val_mse_loss(torch.cat(regression_preds, dim=0), torch.cat(gt_gaze_xy, dim=0))
+                    gt_heatmap[y_grid, x_grid] = 1
+
+                gt_gaze_xy.append(gt_heatmap)
+
+            gt_heatmaps = torch.stack(gt_gaze_xy)
+
+            loss = val_pbce_loss(pred_heatmap, gt_heatmaps)
             validation_loss += loss.item()
 
             pbar.update(1)
@@ -205,7 +200,9 @@ def main():
 
     train_length = train_dataset.__len__()
 
-    mse_loss = torch.nn.MSELoss(reduction='sum')  # Mean Squared Error Loss
+    #mse_loss = torch.nn.MSELoss(reduction='sum')  # Mean Squared Error Loss
+    # Pixel wise binary CrossEntropy loss
+    pbce_loss = torch.nn.BCEWithLogitsLoss()
 
     # save dir for checkpoints
     os.makedirs(config['logging']['pre_dir'], exist_ok=True)
@@ -228,46 +225,24 @@ def main():
             # preds = a dict of{'heatmap': list of head_count *tensor[Batch_size, 64, 64],
             #                   'inout': list of head_count *tensor[Batch_size,] }
 
-            regression_preds = []
-            # convert pred_heatmap to (x, y) loc
-            for b in range(0, images.shape[0]):
-                # len(preds['heatmap'] === 1)
-                # for GazeFollow, head_count should always be 1 (?!)
-                head_count = 1
-                #assert head_count == 1
-                xy_list = torch.empty((head_count, 2))
-
-                for head_idx in range(0, head_count):
-                    heatmap_tensor = preds['heatmap'][head_idx][b].clone()
-
-                    argmax = heatmap_tensor.flatten().argmax().item()
-                    pred_y, pred_x = np.unravel_index(argmax, (64, 64))
-                    pred_x = pred_x / 64.
-                    pred_y = pred_y / 64.
-                    xy_list[head_idx] = torch.tensor([float(pred_x), float(pred_y)], requires_grad=True)
-
-                regression_preds.append(xy_list)  # a list of Batch*[heads * (2,) ]
-
-            # print(len(preds['heatmap']), preds['heatmap'][0].shape)
-
-            # GT = a list of Batch*[head_count*[pixel_norm ] ]
-            # print(len(gazex), gazex[0])
+            pred_heatmap = preds['heatmap'][0]
 
             gt_gaze_xy = []
             for gtxs, gtys in zip(gazex, gazey):
-                heads = len(gtxs)
-                gt_per_img = torch.empty((heads, 2))
+                batch_size0 = len(gtxs)
                 # for GazeFollow, len should always be 1 (?!), so gtxs is no list ??
                 for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
-                    gt_per_img[i] = torch.tensor([gtx, gty], dtype=torch.float32)
-                gt_gaze_xy.append(gt_per_img)
+                    gt_heatmap = torch.zeros((64, 64))
+                    x_grid = int(gtx * 63)
+                    y_grid = int(gty * 63)
 
-            # print(len(gt_gaze_xy), gt_gaze_xy[0])
-            # print(len(regression_preds), regression_preds[0])
+                    gt_heatmap[y_grid, x_grid] = 1
 
-            # Iterate over the batch
+                gt_gaze_xy.append(gt_heatmap)
 
-            loss = mse_loss(torch.cat(regression_preds, dim=0), torch.cat(gt_gaze_xy, dim=0))
+            gt_heatmaps = torch.stack(gt_gaze_xy)
+
+            loss = pbce_loss(pred_heatmap, gt_heatmaps)
 
             # Backpropagation and optimization
             optimizer.zero_grad()
