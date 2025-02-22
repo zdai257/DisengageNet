@@ -80,7 +80,7 @@ def evaluate(config, model, val_loader, device):
 
             gt_heatmaps = torch.stack(gt_gaze_xy)
 
-            loss = val_pbce_loss(pred_heatmap, gt_heatmaps)
+            loss = val_pbce_loss(pred_heatmap, gt_heatmaps.to(device))
             validation_loss += loss.item()
 
             pbar.update(1)
@@ -243,7 +243,7 @@ def main():
 
             gt_heatmaps = torch.stack(gt_gaze_xy)
 
-            loss = pbce_loss(pred_heatmap, gt_heatmaps)
+            loss = pbce_loss(pred_heatmap, gt_heatmaps.to(device))
 
             # Backpropagation and optimization
             optimizer.zero_grad()

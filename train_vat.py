@@ -53,7 +53,7 @@ def collate(batch):
 def evaluate(config, model, val_loader, device):
     model.eval()
 
-    bce_loss = torch.nn.BCELoss(reduction='sum')
+    bce_loss = torch.nn.BCELoss(reduction='mean')
     pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="sum")
     validation_loss = 0.0
     val_total = len(val_loader)
@@ -91,7 +91,7 @@ def evaluate(config, model, val_loader, device):
             gt_heatmaps = torch.cat(gt_heatmaps)
 
             # regress loss
-            total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps)
+            total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device))
 
             # classification loss
             total_loss0 = bce_loss(pred_inouts, torch.stack(inout))
@@ -137,6 +137,7 @@ def main():
 
     # Randomly initialize learnable parameters
     for name, param in model.named_parameters():
+        break
         if param.requires_grad:  # Only initialize unfrozen parameters
             if param.dim() > 1:  # Weights
                 torch.nn.init.xavier_normal_(param)
@@ -219,7 +220,7 @@ def main():
 
     train_length = train_dataset.__len__()
 
-    bce_loss = torch.nn.BCELoss(reduction='sum')  # Binary Cross-Entropy Loss
+    bce_loss = torch.nn.BCELoss(reduction='mean')  # Binary Cross-Entropy Loss
     # Pixel wise binary CrossEntropy loss
     pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="sum")
 
@@ -288,7 +289,7 @@ def main():
             print(pred_heatmaps.shape, gt_heatmaps.shape)
             print(pred_inouts.shape, len(inout))
             # regress loss
-            total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps)
+            total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device))
 
             # classification loss
             total_loss0 = bce_loss(pred_inouts, torch.stack(inout))

@@ -63,11 +63,11 @@ inference:
   checkpoint: "gazelle_dinov2_vitl14_inout.pt"
 
 logging:
-  log_dir: "results/checkpoints0/"
+  log_dir: "results/checkpoints10/"
   pre_dir: "results/prechecks5/"
   save_every: 5
 
 hardware:
-  device: "cuda:2"                    # Device to use (cuda, cpu)
+  device: "cuda:3"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading
