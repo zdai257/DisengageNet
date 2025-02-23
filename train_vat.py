@@ -254,13 +254,14 @@ def main():
 
             # preds = a dict of{'heatmap': list of Batch_size*tensor[head_count, 64, 64],
             #                   'inout': list of Batch_size*tensor[head_count,] }
-            # ? should be head_count * tensor[Batch_size, ]
 
             print(len(preds['heatmap']), preds['heatmap'][0].shape)
             print(len(preds['inout']), preds['inout'][0].shape)
             # GT = a list of Batch*[head_count*[pixel_norm ] ]
             print(len(gazex), gazex[0])
             print(len(inout), inout[0])
+
+            #TODO: fix shape to loss
 
             pred_inout = preds['inout']
             pred_inouts = torch.cat(pred_inout, 0)

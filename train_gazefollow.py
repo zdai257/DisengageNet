@@ -51,7 +51,7 @@ def evaluate(config, model, val_loader, device):
     model.eval()
     batch_size = config['eval']['batch_size']
 
-    val_pbce_loss = torch.nn.BCEWithLogitsLoss()
+    val_pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="sum")
     validation_loss = 0.0
     val_total = len(val_loader)
 
