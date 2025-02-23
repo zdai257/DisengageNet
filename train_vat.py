@@ -86,7 +86,7 @@ def evaluate(config, model, val_loader, device):
                     a_heatmap[y_grid, x_grid] = 1
                     gt_heatmap.append(a_heatmap)
 
-                gt_heatmaps.append(torch.stach(gt_heatmap))
+                gt_heatmaps.append(torch.stack(gt_heatmap))
 
             gt_heatmaps = torch.cat(gt_heatmaps)
 
@@ -255,11 +255,11 @@ def main():
             # preds = a dict of{'heatmap': list of Batch_size*tensor[head_count, 64, 64],
             #                   'inout': list of Batch_size*tensor[head_count,] }
 
-            print(len(preds['heatmap']), preds['heatmap'][0].shape)
-            print(len(preds['inout']), preds['inout'][0].shape)
+            #print(len(preds['heatmap']), preds['heatmap'][0].shape)
+            #print(len(preds['inout']), preds['inout'][0].shape)
             # GT = a list of Batch*[head_count*[pixel_norm ] ]
-            print(len(gazex), gazex[0])
-            print(len(inout), inout[0])
+            #print(len(gazex), gazex[0])
+            #print(len(inout), inout[0])
 
             #TODO: fix shape to loss
 
@@ -267,33 +267,40 @@ def main():
             pred_inouts = torch.cat(pred_inout, 0)
 
             pred_heatmap = preds['heatmap']
-            # stack all N*heads onto Batch dim: (N, 64, 64)
+            # stack all B*heads onto Batch dim: (N, 64, 64)
             pred_heatmaps = torch.cat(pred_heatmap, 0)
 
             gt_heatmaps = []
-            for gtxs, gtys in zip(gazex, gazey):
+            gt_inouts = []
+            for gtxs, gtys, ios in zip(gazex, gazey, inout):
                 heads = len(gtxs)
                 # for VAT, gazex/y is a list of BatchSize * [Heads * [norm_val] ]
                 gt_heatmap = []
-                for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
+                gt_io = []
+                # loop through No. of heads
+                for i, (gtx, gty, io) in enumerate(zip(gtxs, gtys, ios)):
                     a_heatmap = torch.zeros((64, 64))
+                    a_io = torch.zeros((1,), dtype=torch.float32)
                     x_grid = int(gtx * 63)
                     y_grid = int(gty * 63)
 
                     a_heatmap[y_grid, x_grid] = 1
                     gt_heatmap.append(a_heatmap)
+                    gt_io.append(a_io)
 
-                gt_heatmaps.append(torch.stach(gt_heatmap))
+                gt_heatmaps.append(torch.stack(gt_heatmap))
+                gt_inouts.append(torch.cat(gt_io))
 
             gt_heatmaps = torch.cat(gt_heatmaps)
+            gt_inouts = torch.cat(gt_inouts)
 
             print(pred_heatmaps.shape, gt_heatmaps.shape)
-            print(pred_inouts.shape, len(inout))
+            print(pred_inouts.shape, gt_inouts.shape)
             # regress loss
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device))
 
             # classification loss
-            total_loss0 = bce_loss(pred_inouts, torch.stack(inout))
+            total_loss0 = bce_loss(pred_inouts, gt_inouts)
 
             # hide MSE lose when out-of-frame
             inout_mask = torch.tensor(float(inout == 1), dtype=torch.float32)
