@@ -32,7 +32,28 @@ def visualize_heatmap(pil_image, heatmap, bbox=None):
         draw.rectangle([xmin * width, ymin * height, xmax * width, ymax * height], outline="green", width=3)
     return overlay_image
 
-def visualize_heatmap2(pil_image, heatmap, bbox=None, dilation_kernel=2, blur_radius=5, color="green"):
+def clip_line_to_bbox(x1, y1, x2, y2, xmin, ymin, xmax, ymax):
+    """
+            Clips a line so that it starts from the bbox edge instead of the center.
+            Uses a simple bounding box clipping approach.
+    """
+    if x2 < xmin:  # Left edge
+        y1 = y1 + (y2 - y1) * (xmin - x1) / (x2 - x1)
+        x1 = xmin
+    elif x2 > xmax:  # Right edge
+        y1 = y1 + (y2 - y1) * (xmax - x1) / (x2 - x1)
+        x1 = xmax
+    if y2 < ymin:  # Top edge
+        x1 = x1 + (x2 - x1) * (ymin - y1) / (y2 - y1)
+        y1 = ymin
+    elif y2 > ymax:  # Bottom edge
+        x1 = x1 + (x2 - x1) * (ymax - y1) / (y2 - y1)
+        y1 = ymax
+    return int(x1), int(y1)
+
+def visualize_heatmap2(pil_image, heatmap, bbox=None, xy=None, dilation_kernel=2, blur_radius=5, color="lime"):
+    dot_radius = 5
+
     if isinstance(heatmap, torch.Tensor):
         heatmap = heatmap.detach().cpu().numpy()
     # Convert heatmap to uint8 format
@@ -62,6 +83,22 @@ def visualize_heatmap2(pil_image, heatmap, bbox=None, dilation_kernel=2, blur_ra
         xmin, ymin, xmax, ymax = bbox
         draw = ImageDraw.Draw(overlay_image)
         draw.rectangle([xmin * width, ymin * height, xmax * width, ymax * height], outline=color, width=3)
+        if xy is not None:
+            center_x = int((xmin + xmax) / 2 * width)
+            center_y = int((ymin + ymax) / 2 * height)
+
+            # Compute clipped start point at the bbox boundary
+            start_x, start_y = clip_line_to_bbox(center_x, center_y, xy[0], xy[1],
+                                                 int(xmin * width), int(ymin * height), int(xmax * width), int(ymax * height))
+            # Draw the line from bbox center to gaze point
+            draw.line([(start_x, start_y), (xy[0], xy[1])], fill=color, width=3)
+
+            # Draw a dot at the gaze point
+            draw.ellipse(
+                [(xy[0] - dot_radius, xy[1] - dot_radius),
+                 (xy[0] + dot_radius, xy[1] + dot_radius)],
+                fill=color, outline=color
+            )
     return overlay_image
 
 def stack_and_pad(tensor_list):

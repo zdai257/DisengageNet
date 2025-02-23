@@ -153,7 +153,7 @@ if __name__=="__main__":
 
     print("This GazeFollow split dataset size is: ", len(frames))
 
-    id = 0
+    id = 1000
 
     frame_dict = frames[id]
 
@@ -174,11 +174,11 @@ if __name__=="__main__":
 
     bbox = frame_dict["bbox_norm"]
 
-    viz = visualize_heatmap2(image, gt_heatmap, bbox=bbox, dilation_kernel=6, blur_radius=1.3)
+    viz = visualize_heatmap2(image, gt_heatmap, bbox=bbox, xy=(gazex_pixel[0], gazey_pixel[0]), dilation_kernel=6, blur_radius=1.3)
     plt.imshow(viz)
     plt.show()
 
     saved_path = join("processed", "demo_" + img_source.split('/')[-1])
 
-    if 1:  # if saving
+    if 0:  # if saving
         viz.convert("RGB").save(saved_path)
