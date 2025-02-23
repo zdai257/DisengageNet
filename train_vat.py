@@ -12,7 +12,8 @@ import numpy as np
 from tqdm import tqdm
 import yaml
 
-from network.network_builder import get_gazelle_model, get_gt360_model
+#from network.network_builder import get_gazelle_model, get_gt360_model
+from network.network_builder_update import get_gazelle_model, get_gt360_model
 from eval import eval_metrics
 # VAT native data_loader
 #from dataset_builder import VideoAttTarget_video
@@ -167,10 +168,13 @@ def main():
     # set lr differently
     param_dicts = []
     for n, p in model.named_parameters():
-        if p.requires_grad and "inout" not in n:
-            param_dicts.append({'params': p, 'lr': config['train']['lr']})
-        if p.requires_grad and "inout" in n:
-            param_dicts.append({'params': p, 'lr': config['train']['inout_lr']})
+        if p.requires_grad:
+            if "ms_fusion" not in n and "inout" not in n:
+                param_dicts.append({'params': p, 'lr': config['train']['lr']})
+            if "ms_fusion" not in n and "inout" in n:
+                param_dicts.append({'params': p, 'lr': config['train']['inout_lr']})
+            if "ms_fusion" in n:
+                param_dicts.append({'params': p, 'lr': config['train']['fuse_lr']})
 
     if config['train']['optimizer'] == 'Adam':
         optimizer = Adam(param_dicts)
@@ -193,9 +197,9 @@ def main():
 
     # transform
     transform_list = []
-    transform_list.append(transforms.Resize((input_resolution, input_resolution)))
     transform_list.append(transforms.ToTensor())
     transform_list.append(transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
+    transform_list.append(transforms.Resize((input_resolution, input_resolution)))
     my_transform = transforms.Compose(transform_list)
 
     # apply my_transform or gazelle_transform
