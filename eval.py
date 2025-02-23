@@ -11,6 +11,9 @@ from tqdm import tqdm
 import yaml
 from sklearn.metrics import roc_auc_score, average_precision_score
 
+import matplotlib.pyplot as plt
+from network.utils import visualize_heatmap, visualize_heatmap2
+
 
 # GazeFollow calculates AUC using original image size with GT (x,y) coordinates set to 1 and everything else as 0
 # References:
@@ -141,3 +144,41 @@ def eval_pretrain_gazefollow(config, model, test_loader, device):
     print("Min L2: {}".format(minl2))
 
     return auc, meanl2, minl2
+
+
+if __name__=="__main__":
+    split = 'test'
+    import json
+    frames = json.load(open(os.path.join("GazeFollow", "{}_preprocessed.json".format(split)), "rb"))
+
+    print("This GazeFollow split dataset size is: ", len(frames))
+
+    id = 0
+
+    frame_dict = frames[id]
+
+    img_source = join("GazeFollow", frame_dict['path'])
+    image = Image.open(img_source).convert("RGB")
+
+    # convert a heatmap from label
+    gazex_pixel = frame_dict['gazex']
+    gazey_pixel = frame_dict['gazey']
+    gazex = frame_dict['gazex_norm']
+    gazey = frame_dict['gazey_norm']
+
+    gt_heatmap = torch.zeros((64, 64))
+    x_grid = int(gazex[0] * 63)
+    y_grid = int(gazey[0] * 63)
+
+    gt_heatmap[y_grid, x_grid] = 1
+
+    bbox = frame_dict["bbox_norm"]
+
+    viz = visualize_heatmap2(image, gt_heatmap, bbox=bbox, dilation_kernel=6, blur_radius=1.3)
+    plt.imshow(viz)
+    plt.show()
+
+    saved_path = join("processed", "demo_" + img_source.split('/')[-1])
+
+    if 1:  # if saving
+        viz.convert("RGB").save(saved_path)

@@ -1,9 +1,10 @@
 from __future__ import absolute_import
 import torch
 import pandas as pd
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 import numpy as np
 import matplotlib.pyplot as plt
+import cv2
 
 
 def repeat_tensors(tensor, repeat_counts):
@@ -29,6 +30,38 @@ def visualize_heatmap(pil_image, heatmap, bbox=None):
         xmin, ymin, xmax, ymax = bbox
         draw = ImageDraw.Draw(overlay_image)
         draw.rectangle([xmin * width, ymin * height, xmax * width, ymax * height], outline="green", width=3)
+    return overlay_image
+
+def visualize_heatmap2(pil_image, heatmap, bbox=None, dilation_kernel=2, blur_radius=5, color="green"):
+    if isinstance(heatmap, torch.Tensor):
+        heatmap = heatmap.detach().cpu().numpy()
+    # Convert heatmap to uint8 format
+    heatmap = (heatmap * 255).astype(np.uint8)
+
+    # Use a circular kernel for dilation (ensures rounded spread)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_kernel, dilation_kernel))
+    heatmap = cv2.dilate(heatmap, kernel, iterations=1)
+
+    # Apply Gaussian blur to smooth the spread (avoids blocky grid effects)
+    heatmap = cv2.GaussianBlur(heatmap, (0, 0), sigmaX=blur_radius, sigmaY=blur_radius)
+
+    # Convert heatmap back to PIL image
+    heatmap = Image.fromarray(heatmap)
+
+    heatmap = heatmap.resize(pil_image.size, Image.Resampling.BILINEAR)
+    #heatmap = heatmap.resize(pil_image.size, Image.Resampling.BICUBIC)
+
+    heatmap = plt.cm.jet(np.array(heatmap) / 255.)
+    heatmap = (heatmap[:, :, :3] * 255).astype(np.uint8)
+    heatmap = Image.fromarray(heatmap).convert("RGBA")
+    heatmap.putalpha(128)
+    overlay_image = Image.alpha_composite(pil_image.convert("RGBA"), heatmap)
+
+    if bbox is not None:
+        width, height = pil_image.size
+        xmin, ymin, xmax, ymax = bbox
+        draw = ImageDraw.Draw(overlay_image)
+        draw.rectangle([xmin * width, ymin * height, xmax * width, ymax * height], outline=color, width=3)
     return overlay_image
 
 def stack_and_pad(tensor_list):
