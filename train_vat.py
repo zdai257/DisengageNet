@@ -1,7 +1,7 @@
 import argparse
 import torch
 from torch.optim import RMSprop, Adam, AdamW
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR, LambdaLR
 from torchvision import transforms
 from torchvision.transforms import Compose, ToTensor
 import torchvision.transforms.functional as TF
@@ -140,12 +140,15 @@ def main():
     for name, param in model.named_parameters():
         if 'backbone' in name:
             param.requires_grad = False  # Freeze these parameters
+        # Freeze non-MSFM param in warmup
+        elif 'ms_fusion' not in name:
+            param.requires_grad = False
         else:
             param.requires_grad = True  # Keep these learnable
 
     # Randomly initialize learnable parameters
     for name, param in model.named_parameters():
-        break
+        #break
         if param.requires_grad:  # Only initialize unfrozen parameters
             if param.dim() > 1:  # Weights
                 torch.nn.init.xavier_normal_(param)
@@ -177,9 +180,9 @@ def main():
                 param_dicts.append({'params': p, 'lr': config['train']['fuse_lr']})
 
     if config['train']['optimizer'] == 'Adam':
-        optimizer = Adam(param_dicts)
+        optimizer = Adam(param_dicts, weight_decay=config['train']['weight_decay'])
     elif config['train']['optimizer'] == 'AdamW':
-        optimizer = AdamW(param_dicts)
+        optimizer = AdamW(param_dicts, weight_decay=config['train']['weight_decay'])
     else:
         raise TypeError("Optimizer not supported!")
 
@@ -190,7 +193,15 @@ def main():
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
                                                                T_max=100)
                                                                #eta_min=config['train']['lr_scheduler']['min_lr'])
-    else: # linear lr scheduler
+    elif config['train']['lr_scheduler']['type'] == "warmup":
+        def warmup_lambda(epoch):
+            if epoch < lr_step_size:
+                return epoch / lr_step_size  # Linear warm-up
+            return 1.0
+
+        scheduler = LambdaLR(optimizer, lr_lambda=warmup_lambda)
+
+    else:  # linear lr scheduler
         scheduler = StepLR(optimizer, step_size=lr_step_size, gamma=gamma)
 
     input_resolution = config['data']['input_resolution']
@@ -228,8 +239,6 @@ def main():
         pin_memory=config['hardware']['pin_memory']
     )
     # val_loader?
-
-    train_length = train_dataset.__len__()
 
     bce_loss = torch.nn.BCELoss(reduction='mean')  # Binary Cross-Entropy Loss
     # Pixel wise binary CrossEntropy loss
