@@ -128,10 +128,12 @@ def eval_pretrain_gazefollow(config, model, test_loader, device):
 
         # eval each instance (head)
         # in our preprocessed GazeFollow, there is 1 head per image
-        j = 0
-        for i in range(images.shape[0]):
-            auc = gazefollow_auc(preds['heatmap'][i][j], gazex[i][j], gazey[i][j], height[i], width[i])
-            avg_l2, min_l2 = gazefollow_l2(preds['heatmap'][i][j], gazex[i][j], gazey[i][j])
+        i = 0
+        # len(preds['heatmap']) == 0, preds['heatmap'][0] is of (B, 64, 64)
+        
+        for j in range(images.shape[0]):
+            auc = gazefollow_auc(preds['heatmap'][i][j], gazex[j], gazey[j], height[j], width[j])
+            avg_l2, min_l2 = gazefollow_l2(preds['heatmap'][i][j], gazex[j], gazey[j])
             aucs.append(auc)
             avg_l2s.append(avg_l2)
             min_l2s.append(min_l2)
