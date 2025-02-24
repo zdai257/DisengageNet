@@ -116,6 +116,43 @@ def eval_metrics(config, model, test_loader, device):
 
 
 @torch.no_grad()
+def eval_metrics_eyediap(config, model, test_loader, device):
+
+    aucs = []
+    l2s = []
+    inout_preds = []
+    inout_gts = []
+    batch_size = config['eval']['batch_size']
+
+    for _, (images, gazex, gazey, inout) in tqdm(enumerate(test_loader), desc="Evaluating",
+                                                         total=len(test_loader)):
+        if images.shape[0] != batch_size:
+            batch_size = images.shape[0]
+
+        preds = model.forward({"images": images.to(device), "bboxes": batch_size*[[None]]})
+
+        # eval each instance (head)
+        for i in range(images.shape[0]):  # per image
+            for j in range(1):  # per head
+                if inout[i][j] == 1:  # in frame
+                    auc = vat_auc(preds['heatmap'][i][j], gazex[i][j][0], gazey[i][j][0])
+                    l2 = vat_l2(preds['heatmap'][i][j], gazex[i][j][0], gazey[i][j][0])
+                    aucs.append(auc)
+                    l2s.append(l2)
+                inout_preds.append(preds['inout'][i][j].item())
+                inout_gts.append(inout[i][j])
+
+    AUC = np.array(aucs).mean()
+    L2_mean = np.array(l2s).mean()
+    AP = average_precision_score(inout_gts, inout_preds)
+    print("AUC: {}".format(AUC))
+    print("Avg L2: {}".format(L2_mean))
+    print("Inout AP: {}".format(AP))
+
+    return AUC, L2_mean, AP
+
+
+@torch.no_grad()
 def eval_pretrain_gazefollow(config, model, test_loader, device):
 
     aucs = []

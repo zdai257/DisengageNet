@@ -69,6 +69,6 @@ logging:
   save_every: 5
 
 hardware:
-  device: "cuda:2"                    # Device to use (cuda, cpu)
+  device: "cuda"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading
