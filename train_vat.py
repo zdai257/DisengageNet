@@ -300,7 +300,7 @@ def main():
                 # loop through No. of heads
                 for i, (gtx, gty, io) in enumerate(zip(gtxs, gtys, ios)):
                     a_heatmap = torch.zeros((64, 64))
-                    a_io = torch.tensor(io[0], dtype=torch.float32)
+                    a_io = torch.tensor([io], dtype=torch.float32)
                     x_grid = int(gtx[0] * 63)
                     y_grid = int(gty[0] * 63)
 
@@ -320,7 +320,7 @@ def main():
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device))
 
             # classification loss
-            total_loss0 = bce_loss(pred_inouts, gt_inouts)
+            total_loss0 = bce_loss(pred_inouts, gt_inouts.to(device))
 
             # hide MSE lose when out-of-frame
             inout_mask = torch.tensor(float(inout == 1), dtype=torch.float32)
