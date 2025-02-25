@@ -27,7 +27,7 @@ if not os.path.isfile(PREDICTOR_PATH):
 
 
 class DemoSys():
-    def __init__(self, model_ec=MODEL_WEIGHTS, model_gt="gazelle_dinov2_vitl14_inout.pt", facedetect=None, gazedetect='OpenFace'):
+    def __init__(self, model_ec=MODEL_WEIGHTS, model_gt="gazelle_dinov2_vitl14_inout.pt", facedetect=None):
         self.saved_path = "GT360output.png"
         self.savefigs = 1
 
@@ -71,6 +71,7 @@ class DemoSys():
         # resize image
         frame.thumbnail((896, 896))  # (896, 896)
         print(frame.width, frame.height)
+        w, h = frame.width, frame.height
 
         frame0 = frame.convert("RGBA")
         # Create a transparent overlay for drawing
@@ -79,7 +80,7 @@ class DemoSys():
 
         with torch.no_grad():
             
-            ec_prob, bboxes = self.ec_infer(frame)
+            ec_prob, bboxes = self.ec_infer(frame, bbox_scalar=0.2)
 
             ecs = {}
             heatmaps = {}
@@ -96,23 +97,27 @@ class DemoSys():
             if len(bbox_lst) > 0:
                 # access prediction for first person in first image. Tensor of size [64, 64]
                 # in/out of frame score (1 = in frame) (output["inout"] will be None  for non-inout models)
-                preds = self.gt_infer(frame, bbox_lst, self.gt_transform)
+                bbox_norm_lst = [(b[0]/w, b[1]/h, b[2]/w, b[3]/h) for b in bbox_lst]
+
+                preds = self.gt_infer(frame, bbox_norm_lst, self.gt_transform)
 
                 for i, b in enumerate(bbox_lst):  # per face
+                    if i == 0:
+                        continue
+
                     inout = preds['inout'][0][i]
                     if inout < 0.5:  # out of frame (OFT)
                         heatmaps[b] = 0
 
                         # Draw a semi-transparent red rectangle on the overlay
-                        draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(255, 0, 0, 80), outline=(0, 255, 0), width=7)
+                        draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(255, 0, 0, 70), outline=(0, 255, 0), width=7)
 
                     else:  # in frame (IFT)
                         heatmap = preds['heatmap'][0][i].detach()
 
-                        heatmaps[b] = preds['heatmap'][0][i].detach()
+                        heatmaps[b] = heatmap
 
                         # convert heatmap to argmax (x,y) coordinate points
-                        w, h = frame.size
                         bbox_norm = (b[0]/w, b[1]/h, b[2]/w, b[3]/h)
 
                         argmax = heatmap.flatten().argmax().item()
@@ -128,12 +133,12 @@ class DemoSys():
                         if self.savefigs:
                             viz.convert("RGB").save(join("processed", "ec_" + self.saved_path))
                         plt.close()
-                        break
+                    break
 
         for b in ecs.keys():
 
             # Draw a semi-transparent green rectangle on the overlay
-            draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(0, 255, 0, 80), outline=(0, 255, 0), width=7)
+            draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(0, 255, 0, 70), outline=(0, 255, 0), width=6)
 
         frame2show = Image.alpha_composite(frame.convert('RGBA'), overlay)
         frame2show.show()
@@ -141,7 +146,7 @@ class DemoSys():
             frame2show.convert("RGB").save(join("processed", "ift_" + self.saved_path))
         return ecs, heatmaps
         
-    def ec_infer(self, frame):
+    def ec_infer(self, frame, bbox_scalar=0.2):
         bbox = []
         scores = []
         dets = self.cnn_face_detector(np.array(frame), 1)
@@ -154,10 +159,10 @@ class DemoSys():
             t = d.rect.top()
             b = d.rect.bottom()
             # expand a bit
-            l -= (r - l) * 0.2
-            r += (r - l) * 0.2
-            t -= (b - t) * 0.2
-            b += (b - t) * 0.2
+            l -= (r - l) * bbox_scalar
+            r += (r - l) * bbox_scalar
+            t -= (b - t) * bbox_scalar
+            b += (b - t) * bbox_scalar
             bbox.append((l, t, r, b))
 
         for b in bbox:
@@ -201,12 +206,19 @@ if __name__ == "__main__":
     
     demo = DemoSys()
 
-    #img_path = "data/WALIexample0.png"
+    img_path = "data/WALIexample0.jpg"
+    #img_path = "data/WALIHRIexample1.png"
+    #img_path = "data/WALIHRIexample2.png"
+    #img_path = "data/WALIHRIexample3.png"
     #img_path = "data/joye.jpg"
     #img_path = "data/0028_2m_-15P_10V_5H.jpg"
-    img_path = "data/0028_2m_30P_0V_0H.jpg"
+    #img_path = "data/0028_2m_30P_0V_0H.jpg"
     #img_path = "data/0018_2m_15P_0V_0H.jpg"
+    #img_path = "data/example-16_A_FT_M.png"
     #img_path = "data/GF_image.jpg"
+    #img_path = "data/0000867.jpg"  # interesting
+    #img_path = "data/00004218.jpg"
+    #img_path = "data/00000033.jpg"
 
     ec_results, heatmap_results = demo.conditional_inference(img_path)
 

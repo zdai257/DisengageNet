@@ -8,7 +8,7 @@ from torchvision.transforms import Compose, ToTensor
 from PIL import Image
 import yaml
 import json
-from EYEDIAP.EYEDIAP.Scripts.EYEDIAP_misc import *
+#from EYEDIAP.EYEDIAP.Scripts.EYEDIAP_misc import *
 
 from network.network_builder import get_gazelle_model, get_gt360_model
 #from network.network_builder_update import get_gazelle_model, get_gt360_model
