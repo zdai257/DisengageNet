@@ -54,7 +54,7 @@ train:
 
 eval:
   checkpoint: "gazelle_large_vitl14_inout.pt"  # Path to the checkpoint for evaluation
-  batch_size: 32                    # Batch size for evaluation
+  batch_size: 12                    # Batch size for evaluation
   metrics:                          # Evaluation metrics
     - accuracy
     - precision
