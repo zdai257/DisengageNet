@@ -3,6 +3,7 @@ import torch
 from torch.optim import RMSprop, Adam, AdamW
 from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR, LambdaLR
 from torchvision import transforms
+import torchvision.transforms as T
 from torchvision.transforms import Compose, ToTensor
 import torchvision.transforms.functional as TF
 from PIL import Image
@@ -208,6 +209,11 @@ def main():
 
     # transform
     transform_list = []
+    # augmentation++
+    transform_list.append(T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1))
+    transform_list.append(T.RandomApply([T.GaussianBlur(kernel_size=3)], p=0.3))
+    transform_list.append(T.RandomApply([T.RandomGrayscale(p=0.2)], p=0.3))
+    
     transform_list.append(transforms.ToTensor())
     transform_list.append(transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
     transform_list.append(transforms.Resize((input_resolution, input_resolution)))
