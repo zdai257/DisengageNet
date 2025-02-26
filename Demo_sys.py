@@ -9,8 +9,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 import dlib
 import matplotlib.pyplot as plt
-from network.network_builder import get_gazelle_model
-#from network.network_builder_update import get_gazelle_model
+#from network.network_builder import get_gazelle_model
+from network.network_builder_update import get_gazelle_model
 from network.ec_network_builder import get_ec_model
 from network.utils import visualize_heatmap, visualize_heatmap2
 
@@ -65,7 +65,7 @@ class DemoSys():
         self.model_gt.to(self.device)
         self.model_gt.eval()
 
-    def conditional_inference(self, input_data, threshold=0.8):
+    def conditional_inference(self, input_data, threshold=0.85):
         frame = Image.open(input_data).convert("RGB")
 
         # resize image
@@ -102,8 +102,9 @@ class DemoSys():
                 preds = self.gt_infer(frame, bbox_norm_lst, self.gt_transform)
 
                 for i, b in enumerate(bbox_lst):  # per face
-                    if i == 0:
-                        continue
+                    ### Carefully remove this if visual multi faces ###
+                    #if i == 0:
+                    #    continue
 
                     inout = preds['inout'][0][i]
                     if inout < 0.5:  # out of frame (OFT)
@@ -131,7 +132,8 @@ class DemoSys():
                         plt.imshow(viz)
                         plt.show()
                         if self.savefigs:
-                            viz.convert("RGB").save(join("processed", "ec_" + self.saved_path))
+
+                            viz.convert("RGB").save(join("processed", "ift_" + self.saved_path))
                         plt.close()
                     break
 
@@ -143,7 +145,7 @@ class DemoSys():
         frame2show = Image.alpha_composite(frame.convert('RGBA'), overlay)
         frame2show.show()
         if self.savefigs:
-            frame2show.convert("RGB").save(join("processed", "ift_" + self.saved_path))
+            frame2show.convert("RGB").save(join("processed", "ec_" + self.saved_path))
         return ecs, heatmaps
         
     def ec_infer(self, frame, bbox_scalar=0.2):
@@ -206,7 +208,7 @@ if __name__ == "__main__":
     
     demo = DemoSys()
 
-    img_path = "data/WALIexample0.jpg"
+    #img_path = "data/WALIexample0.png"
     #img_path = "data/WALIHRIexample1.png"
     #img_path = "data/WALIHRIexample2.png"
     #img_path = "data/WALIHRIexample3.png"
@@ -215,8 +217,12 @@ if __name__ == "__main__":
     #img_path = "data/0028_2m_30P_0V_0H.jpg"
     #img_path = "data/0018_2m_15P_0V_0H.jpg"
     #img_path = "data/example-16_A_FT_M.png"
-    #img_path = "data/GF_image.jpg"
+    #img_path = "data/example-2_A_FT_M.png"
+    #img_path = "data/example-8_A_FT_M.png"
+    img_path = "data/0041.jpg"
     #img_path = "data/0000867.jpg"  # interesting
+    #img_path = "data/0000051.jpg"
+    #img_path = "data/0000000.jpg"
     #img_path = "data/00004218.jpg"
     #img_path = "data/00000033.jpg"
 
