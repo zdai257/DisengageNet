@@ -5,9 +5,11 @@ import yaml
 import torch
 import torch.nn.functional as F
 import numpy as np
-import random
 from torchvision import transforms
+import torchvision.models as models
+from torch.utils.data import DataLoader, Dataset
 import json
+import tqdm
 from PIL import Image, ImageDraw
 import dlib
 import pickle
@@ -74,6 +76,109 @@ class MPIIData(object):
             id = k.split('/')[1]
             if 1:
                 self.frames.append([path, ec])
+
+
+class MPIIDataset(Dataset):
+    def __init__(self, transform=None, root_path='MPIIFaceGaze', label_path='MPIIFaceGaze/EC_labels.json', split='train'):
+        self.root_path = root_path
+        self.transform = transform
+        labels = json.load(open(label_path, "rb"))
+
+        self.class_counts = [0., 0.]
+
+        if split == 'train':
+            ids = ['p' + str(i).zfill(2) for i in range(14)]
+        else:
+            ids = ['p14']
+
+        self.frames = []
+        for k, v in labels.items():
+            path = k
+            ec = v
+
+            id = k.split('/')[1]
+            if id in ids:
+                self.frames.append([path, ec])
+
+                if ec == 0:
+                    self.class_counts[0] += 1
+                elif ec == 1:
+                    self.class_counts[1] += 1
+
+    def __len__(self):
+        return len(self.frames)
+
+    def __getitem__(self, idx):
+        img_name = self.frames[idx][0]
+        image = Image.open(img_name).convert("RGB")
+        label = self.frames[idx][1]
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label
+
+
+def train():
+    #cnn_face_detector = dlib.cnn_face_detection_model_v1(CNN_FACE_MODEL)
+
+    device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+
+    model = models.resnet50(pretrained=True)
+    #print(model)
+
+    num_ftrs = model.fc.in_features
+    model.fc = torch.nn.Linear(num_ftrs, 2)
+
+    for n, p in enumerate(model.parameters()):
+        if p.requires_grad:
+            #print(n)
+            pass
+
+    model = model.to(device)
+
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+    train_dataset = MPIIDataset(transform=transform)
+    test_dataset = MPIIDataset(transform=transform, split='test')
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+
+    total_samples = train_dataset.__len__()
+    class_counts = train_dataset.class_counts
+
+    class_weights = torch.tensor([total_samples / (2 * class_counts[0]), total_samples / (2 * class_counts[1])],
+                                 dtype=torch.float).to(device)
+    print(class_weights)
+
+    criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+
+    # Training
+    num_epochs = 10
+    model.train()
+    for epoch in range(num_epochs):
+        running_loss = 0.0
+        for b, (images, labels) in tqdm.tqdm(enumerate(train_loader), total=len(train_loader)):
+            images, labels = images.to(device), labels.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item()
+
+        print(f"Epoch {epoch + 1}, Loss: {running_loss / len(train_loader)}")
+
+    model_path = "deepec_resnet50.pth"
+    torch.save(model.state_dict(), model_path)
+    print(f"Model saved to {model_path}")
 
 
 def main(t=0.85, pretrained=True):
@@ -147,5 +252,6 @@ def main(t=0.85, pretrained=True):
 
 if __name__ == "__main__":
 
-    main()
+    train()
+    #main()
 
