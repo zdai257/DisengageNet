@@ -42,10 +42,10 @@ train:
     min_lr: 1e-6                    # Minimum learning rate for cosine/other schedulers
   gradient_clipping: 5.0            # Gradient clipping threshold
   # GazeFollow pretrain params
-  pre_lr: 0.01
+  pre_lr: 0.001
   pre_batch_size: 60   # 60
   pre_epochs: 15   # 15
-  pre_optimizer: "Adam"
+  pre_optimizer: "AdamW"
   pre_lr_scheduler:
     type: "cosine"                  # cosine / linear
     step_size: 10                   # Step size for step scheduler
@@ -54,7 +54,7 @@ train:
 
 eval:
   checkpoint: "gazelle_large_vitl14_inout.pt"  # Path to the checkpoint for evaluation
-  batch_size: 12                    # Batch size for evaluation
+  batch_size: 32                    # Batch size for evaluation
   metrics:                          # Evaluation metrics
     - accuracy
     - precision
@@ -64,11 +64,11 @@ inference:
   checkpoint: "gazelle_dinov2_vitl14_inout.pt"
 
 logging:
-  log_dir: "results/warmup0/"   # "results/checkpoints13/"
-  pre_dir: "results/prechecks5/"
+  log_dir: "results/warmup20/"   # "results/checkpoints20/"
+  pre_dir: "results/prechecks20/"
   save_every: 5
 
 hardware:
-  device: "cuda"                    # Device to use (cuda, cpu)
+  device: "cuda:2"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading

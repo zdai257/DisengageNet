@@ -14,7 +14,8 @@ import numpy as np
 from tqdm import tqdm
 import yaml
 
-from network.network_builder import get_gazelle_model, get_gt360_model
+#from network.network_builder import get_gazelle_model, get_gt360_model
+from network.network_builder_update2 import get_gazelle_model, get_gt360_model
 from eval import eval_pretrain_gazefollow
 
 
@@ -51,7 +52,7 @@ def evaluate(config, model, val_loader, device):
     model.eval()
     batch_size = config['eval']['batch_size']
 
-    val_pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="sum")
+    val_pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
     validation_loss = 0.0
     val_total = len(val_loader)
 
@@ -102,8 +103,9 @@ def main():
     # TODO: my_net
     # my_net = get_gt360_model(config)
     model, gazelle_transform = get_gazelle_model(config)
-    #model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True),
-    #                              include_backbone=False)
+    model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True),
+                                  include_backbone=False)
+    #model.load_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True, map_location=device))
 
     # Verify the freezing and initialization
     for name, param in model.named_parameters():
@@ -119,6 +121,7 @@ def main():
 
     # Randomly initialize learnable parameters
     for name, param in model.named_parameters():
+        break
         if param.requires_grad:  # Only initialize unfrozen parameters
             if param.dim() > 1:  # Weights
                 torch.nn.init.xavier_normal_(param)
@@ -135,12 +138,15 @@ def main():
     n_parameters = sum(p.numel()
                        for p in model.parameters() if p.requires_grad)
     print(f"Number of params: {n_parameters}")
-
+    
     # set LR
     param_dicts = []
     for n, p in model.named_parameters():
         if p.requires_grad:
-            param_dicts.append({'params': p, 'lr': lr})
+            if 'ms_fusion' in n or 'transformer' in n:
+                param_dicts.append({'params': p, 'lr': config['train']['fuse_lr']})
+            else:
+                param_dicts.append({'params': p, 'lr': lr})
 
     if config['train']['pre_optimizer'] == 'Adam':
         optimizer = Adam(param_dicts)
@@ -164,12 +170,12 @@ def main():
     # transform
     # RandomCrop + flip + BBox Jitter (?)
     transform_list = []
-    transform_list.append(transforms.Resize(input_resolution))
     #transform_list.append(transforms.RandomResizedCrop((input_resolution, input_resolution)))
     # TODO: deal with flipped bbox labels
     # transform_list.append(transforms.RandomHorizontalFlip(0.5))
     transform_list.append(transforms.ToTensor())
     transform_list.append(transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
+    transform_list.append(transforms.Resize(input_resolution))
     my_transform = transforms.Compose(transform_list)
 
     my_transform = gazelle_transform
@@ -203,7 +209,7 @@ def main():
 
     #mse_loss = torch.nn.MSELoss(reduction='sum')  # Mean Squared Error Loss
     # Pixel wise binary CrossEntropy loss
-    pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="sum")
+    pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
 
     # save dir for checkpoints
     os.makedirs(config['logging']['pre_dir'], exist_ok=True)

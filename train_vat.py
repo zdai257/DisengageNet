@@ -14,7 +14,7 @@ from tqdm import tqdm
 import yaml
 
 #from network.network_builder import get_gazelle_model, get_gt360_model
-from network.network_builder_update import get_gazelle_model, get_gt360_model
+from network.network_builder_update2 import get_gazelle_model, get_gt360_model
 from eval import eval_metrics
 # VAT native data_loader
 #from dataset_builder import VideoAttTarget_video
@@ -56,7 +56,7 @@ def evaluate(config, model, val_loader, device):
     model.eval()
 
     bce_loss = torch.nn.BCELoss(reduction='mean')
-    pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="sum")
+    pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
     validation_loss = 0.0
     val_total = len(val_loader)
 
