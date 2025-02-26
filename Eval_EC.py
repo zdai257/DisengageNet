@@ -74,7 +74,7 @@ class MPIIData(object):
             ec = v
 
             id = k.split('/')[1]
-            if 1:
+            if id == 'p14':
                 self.frames.append([path, ec])
 
 
@@ -159,7 +159,7 @@ def train():
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 
     # Training
-    num_epochs = 10
+    num_epochs = 0
     model.train()
     for epoch in range(num_epochs):
         running_loss = 0.0
@@ -181,7 +181,7 @@ def train():
     print(f"Model saved to {model_path}")
 
 
-def main(t=0.85, pretrained=True):
+def main(model_name="GT360", t=0.85, pretrained=True):
 
     #C = ColumbiaTest()
     C = MPIIData()
@@ -190,7 +190,7 @@ def main(t=0.85, pretrained=True):
     with open('configuration.yaml', 'r') as file:
         config = yaml.safe_load(file)
 
-    device = config['hardware']['device'] if torch.cuda.is_available() else "cpu"
+    device = 'cuda:3' if torch.cuda.is_available() else "cpu"
     print("Running on {}".format(device))
 
     cnn_face_detector = dlib.cnn_face_detection_model_v1(CNN_FACE_MODEL)
@@ -206,12 +206,21 @@ def main(t=0.85, pretrained=True):
     with open(MODEL_WEIGHTS, 'rb') as f:
         loaded = pickle.load(f)
 
-    # load model weights
-    model = get_ec_model(config, model_weight)
-    model_dict = model.state_dict()
-    snapshot = torch.load(model_weight, map_location=torch.device(device))
-    model_dict.update(snapshot)
-    model.load_state_dict(model_dict)
+    # SELECT MODEL
+    if model_name == 'DEEPEC':
+        model = models.resnet50(pretrained=True)
+        num_ftrs = model.fc.in_features
+        model.fc = torch.nn.Linear(num_ftrs, 2)
+
+        model.load_state_dict(torch.load("deepec_resnet50.pth", map_location=device))
+    elif model_name == 'GT360':
+        model = get_ec_model(config, model_weight)
+        model_dict = model.state_dict()
+        snapshot = torch.load(model_weight, map_location=torch.device(device))
+        model_dict.update(snapshot)
+        model.load_state_dict(model_dict)
+    else:
+        raise Exception
 
     model.to(device)
     model.eval()
@@ -233,7 +242,17 @@ def main(t=0.85, pretrained=True):
 
         output = model(img.to(device))
 
-        score = F.sigmoid(output).item()
+        if model_name == 'DEEPEC':
+
+            true_false = output[0].argmax().cpu()
+
+            #print(output, true_false)
+            if round(float(true_false)) == 0:
+                score = 1
+            else:
+                score = 0
+        else:
+            score = F.sigmoid(output).item()
 
         #print(score, path)
         if score > t and ec == 1:
@@ -252,6 +271,6 @@ def main(t=0.85, pretrained=True):
 
 if __name__ == "__main__":
 
-    train()
-    #main()
+    #train()
+    main(model_name='DEEPEC')
 
