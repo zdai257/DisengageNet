@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-![openingfig](https://github.com/zdai257/DisengageNet/tree/main/processed/demo.png)
+![openingfig](https://github.com/zdai257/DisengageNet/blob/main/processed/demo.png)
 
 ## Description
 
