@@ -357,16 +357,8 @@ def positionalencoding2d(d_model, height, width):
 #############################################
 # Step 4: Update Model Creation Functions
 #############################################
-def get_gt360_model(config):
-    with open("configuration.yaml") as file:
-        try:
-            print(yaml.safe_load(file))
-        except yaml.YAMLError as exc:
-            print(exc)
-    # TODO: Return GT360(backbone)
-    return None
 
-def get_gazelle_model(configuration):
+def get_gt360_model(configuration):
     factory = {
         "gazelle_dinov2_vitb14": gazelle_dinov2_vitb14,
         "gazelle_dinov2_vitl14": gazelle_dinov2_vitl14,
@@ -376,19 +368,19 @@ def get_gazelle_model(configuration):
     assert configuration['model']['name'] in factory.keys(), "invalid model name"
     return factory[configuration['model']['name']]()
 
-def gazelle_dinov2_vitb14(transformer_type="vanilla"):
+def gazelle_dinov2_vitb14(transformer_type="shared"):
     backbone = DinoV2BackboneMultiScale('dinov2_vitb14')
     transform = backbone.get_transform((448, 448))
     model = GazeLLE(backbone, transformer_type=transformer_type)
     return model, transform
 
-def gazelle_dinov2_vitl14(transformer_type="vanilla"):
+def gazelle_dinov2_vitl14(transformer_type="shared"):
     backbone = DinoV2BackboneMultiScale('dinov2_vitl14')
     transform = backbone.get_transform((448, 448))
     model = GazeLLE(backbone, transformer_type=transformer_type)
     return model, transform
 
-def gazelle_dinov2_vitb14_inout(transformer_type="vanilla"):
+def gazelle_dinov2_vitb14_inout(transformer_type="shared"):
     backbone = DinoV2BackboneMultiScale('dinov2_vitb14')
     transform = backbone.get_transform((448, 448))
     model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)

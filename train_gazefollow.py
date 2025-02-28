@@ -14,8 +14,8 @@ import numpy as np
 from tqdm import tqdm
 import yaml
 
-#from network.network_builder import get_gazelle_model, get_gt360_model
-from network.network_builder_update2 import get_gazelle_model, get_gt360_model
+from network.network_builder import get_gazelle_model
+from network.network_builder_update2 import get_gt360_model
 from eval import eval_pretrain_gazefollow
 
 
@@ -100,9 +100,8 @@ def main():
     lr = config['train']['pre_lr']
     num_epochs = config['train']['pre_epochs']
 
-    # TODO: my_net
-    # my_net = get_gt360_model(config)
-    model, gazelle_transform = get_gazelle_model(config)
+    # load network
+    model, gazelle_transform = get_gt360_model(config)
     model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True),
                                   include_backbone=False)
     #model.load_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True, map_location=device))

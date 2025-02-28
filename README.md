@@ -17,7 +17,7 @@ The following libraries are required
 - torchvision = 0.20.1
 - dlib
 
-This work is inspired by (Gaze-LLE)[https://github.com/fkryan/gazelle/tree/main?tab=readme-ov-file] model. You can create their conda environment provided then install *dlib* library. You will need to download VideoAttentionTarget dataset in /VAT and GazeFollow dataset in /GazeFollow under the root folder for training.
+This work is inspired by [Gaze-LLE](https://github.com/fkryan/gazelle/tree/main?tab=readme-ov-file) model. You can create their conda environment provided then install *dlib* library. You will need to download [VideoAttentionTarget](https://github.com/ejcgt/attention-target-detection) dataset in /VAT and [GazeFollow](https://huggingface.co/datasets/ShijianDeng/gazefollow) dataset in /GazeFollow under the root folder for training.
 
 ## Steps
 
