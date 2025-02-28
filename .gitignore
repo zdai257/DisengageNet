@@ -13,3 +13,5 @@ data/
 *.parquet
 .pt
 .pth
+.jpg
+.png
