@@ -90,7 +90,7 @@ def evaluate(config, model, val_loader, device):
                     y_grid = int(gty[0] * 63)
 
                     a_heatmap[y_grid, x_grid] = 1
-                    a_heatmap = TF.gaussian_blur(a_heatmap.unsqueeze(0), kernel_size=[7, 7], sigma=[2.0]).squeeze(0)
+                    a_heatmap = TF.gaussian_blur(a_heatmap.unsqueeze(0), kernel_size=[5, 5], sigma=[3.0]).squeeze(0)
                     gt_heatmap.append(a_heatmap)
                     gt_io.append(a_io)
 
@@ -150,7 +150,7 @@ def main():
 
     # Randomly initialize learnable parameters
     for name, param in model.named_parameters():
-        #break
+        break
         if param.requires_grad:  # Only initialize unfrozen parameters
             if 'ms_fusion' in name or 'transformer' in name:
                 if param.dim() > 1:  # Weights
@@ -215,7 +215,7 @@ def main():
     transform_list = []
     # augmentation++
     transform_list.append(T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1))
-    transform_list.append(T.RandomApply([T.GaussianBlur(kernel_size=3)], p=0.3))
+    #transform_list.append(T.RandomApply([T.GaussianBlur(kernel_size=3)], p=0.3))
     transform_list.append(T.RandomApply([T.RandomGrayscale(p=0.2)], p=0.3))
     
     transform_list.append(transforms.ToTensor())
@@ -316,7 +316,7 @@ def main():
 
                     a_heatmap[y_grid, x_grid] = 1
                     # add label gaussian blur
-                    a_heatmap = TF.gaussian_blur(a_heatmap.unsqueeze(0), kernel_size=[7, 7], sigma=[2.0]).squeeze(0)
+                    a_heatmap = TF.gaussian_blur(a_heatmap.unsqueeze(0), kernel_size=[5, 5], sigma=[3.0]).squeeze(0)
                     gt_heatmap.append(a_heatmap)
                     gt_io.append(a_io)
 

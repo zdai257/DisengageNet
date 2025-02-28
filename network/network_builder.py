@@ -154,16 +154,6 @@ def positionalencoding2d(d_model, height, width):
     
 
 # models
-def get_gt360_model(config):
-    with open("configuration.yaml") as file:
-        try:
-            print(yaml.safe_load(file))
-        except yaml.YAMLError as exc:
-            print(exc)
-
-    #TODO return GT360(backbone)
-    return None
-
 def get_gazelle_model(configuration):
     factory = {
         "gazelle_dinov2_vitb14": gazelle_dinov2_vitb14,

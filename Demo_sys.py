@@ -9,8 +9,9 @@ import numpy as np
 from PIL import Image, ImageDraw
 import dlib
 import matplotlib.pyplot as plt
-#from network.network_builder import get_gazelle_model
-from network.network_builder_update import get_gazelle_model
+from network.network_builder import get_gazelle_model
+#from network.network_builder_update import get_gt360_model
+from network.network_builder_update2 import get_gt360_model
 from network.ec_network_builder import get_ec_model
 from network.utils import visualize_heatmap, visualize_heatmap2
 
@@ -27,7 +28,7 @@ if not os.path.isfile(PREDICTOR_PATH):
 
 
 class DemoSys():
-    def __init__(self, model_ec=MODEL_WEIGHTS, model_gt="gazelle_dinov2_vitl14_inout.pt", facedetect=None):
+    def __init__(self, model_gt='gazelle_dinov2_vitl14_inout.pt', model_ec=MODEL_WEIGHTS, facedetect=None):
         self.saved_path = "GT360output.png"
         self.savefigs = 1
 
@@ -57,8 +58,11 @@ class DemoSys():
         self.model_ec.eval()
 
         # load IFT/OFT detector
-        model, transform = get_gazelle_model(config)
-        model.load_gazelle_state_dict(torch.load(model_gt, weights_only=True))
+        #model, transform = get_gazelle_model(config)
+        model, transform = get_gt360_model(config)
+        # load a pre-trained model
+        model.load_state_dict(torch.load(model_gt, map_location=self.device, weights_only=False)['model_state_dict'])
+        #model.load_gazelle_state_dict(torch.load(model_gt, weights_only=True, map_location=torch.device(self.device)))
         self.model_gt = model
         self.gt_transform = transform
 
@@ -206,7 +210,7 @@ class DemoSys():
 
 if __name__ == "__main__":
     
-    demo = DemoSys()
+    demo = DemoSys(model_gt="Best_model_ep1_l232_ap85.pt")
 
     #img_path = "data/WALIexample0.png"
     #img_path = "data/WALIHRIexample1.png"
@@ -219,12 +223,12 @@ if __name__ == "__main__":
     #img_path = "data/example-16_A_FT_M.png"
     #img_path = "data/example-2_A_FT_M.png"
     #img_path = "data/example-8_A_FT_M.png"
-    img_path = "data/0041.jpg"
+    #img_path = "data/0041.jpg"
     #img_path = "data/0000867.jpg"  # interesting
     #img_path = "data/0000051.jpg"
     #img_path = "data/0000000.jpg"
     #img_path = "data/00004218.jpg"
-    #img_path = "data/00000033.jpg"
+    img_path = "data/00000033.jpg"
 
     ec_results, heatmap_results = demo.conditional_inference(img_path)
 

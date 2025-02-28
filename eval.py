@@ -7,6 +7,7 @@ from torchvision.transforms import Compose, ToTensor
 from PIL import Image
 from torchvision.transforms import Compose, ToTensor, Normalize
 from network.network_builder import get_gazelle_model
+from network.network_builder_update2 import get_gt360_model
 from tqdm import tqdm
 import yaml
 from sklearn.metrics import roc_auc_score, average_precision_score

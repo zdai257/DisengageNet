@@ -5,6 +5,7 @@ from torch.nn import init
 from PIL import Image
 from torchvision.transforms import Compose, ToTensor, Normalize
 from network.network_builder import get_gazelle_model
+from network.network_builder_update2 import get_gt360_model
 import yaml
 
 

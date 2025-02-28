@@ -14,6 +14,7 @@ import dlib
 import pickle
 from network.ec_network_builder import get_ec_model
 
+
 CNN_FACE_MODEL = 'model/mmod_human_face_detector.dat'  # from http://dlib.net/files/mmod_human_face_detector.dat.bz2
 MODEL_WEIGHTS = 'model/model_weights.pkl'
 

@@ -2,6 +2,8 @@ from os.path import join
 from PIL import Image
 import torch
 from network.network_builder import get_gazelle_model
+from network.network_builder_update2 import get_gt360_model
+
 
 config = {'model': {}}
 config['model']['name'] = "gazelle_dinov2_vitl14_inout"
