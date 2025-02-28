@@ -394,7 +394,7 @@ def gazelle_dinov2_vitb14_inout(transformer_type="vanilla"):
     model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)
     return model, transform
 
-def gazelle_dinov2_vitl14_inout(transformer_type="vanilla"):  # performer
+def gazelle_dinov2_vitl14_inout(transformer_type="shared"):  # performer
     backbone = DinoV2BackboneMultiScale('dinov2_vitl14')
     transform = backbone.get_transform((448, 448))
     model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)

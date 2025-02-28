@@ -11,6 +11,5 @@ EYEDIAP/
 results/
 data/
 *.parquet
-processed/
 .pt
 .pth

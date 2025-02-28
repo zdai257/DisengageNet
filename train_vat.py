@@ -143,8 +143,8 @@ def main():
         if 'backbone' in name:
             param.requires_grad = False  # Freeze these parameters
         # Freeze non-MSFM param in warmup
-        elif 'ms_fusion' not in name:
-            param.requires_grad = False
+        elif 'ms_fusion' in name or 'transformer' in name:
+            param.requires_grad = True
         else:
             param.requires_grad = True  # Keep these learnable
 
@@ -152,11 +152,12 @@ def main():
     for name, param in model.named_parameters():
         #break
         if param.requires_grad:  # Only initialize unfrozen parameters
-            if param.dim() > 1:  # Weights
-                torch.nn.init.xavier_normal_(param)
-            else:  # Biases
-                torch.nn.init.zeros_(param)
-
+            if 'ms_fusion' in name or 'transformer' in name:
+                if param.dim() > 1:  # Weights
+                    torch.nn.init.xavier_normal_(param)
+                else:  # Biases
+                    torch.nn.init.zeros_(param)
+            
     # Verify the freezing and initialization
     for name, param in model.named_parameters():
         #print(f"{name}: requires_grad={param.requires_grad}")
@@ -174,12 +175,14 @@ def main():
     param_dicts = []
     for n, p in model.named_parameters():
         if p.requires_grad:
-            if "ms_fusion" not in n and "inout" not in n:
-                param_dicts.append({'params': p, 'lr': config['train']['lr']})
-            if "ms_fusion" not in n and "inout" in n:
-                param_dicts.append({'params': p, 'lr': config['train']['inout_lr']})
-            if "ms_fusion" in n:
+            #if "ms_fusion" not in n and "inout" not in n:
+            #    param_dicts.append({'params': p, 'lr': config['train']['lr']})
+            #if "ms_fusion" not in n and "inout" in n:
+            #    param_dicts.append({'params': p, 'lr': config['train']['inout_lr']})
+            if 'ms_fusion' in name or 'transformer' in name:
                 param_dicts.append({'params': p, 'lr': config['train']['fuse_lr']})
+            else:
+                param_dicts.append({'params': p, 'lr': config['train']['lr']})
 
     if config['train']['optimizer'] == 'Adam':
         optimizer = Adam(param_dicts, weight_decay=config['train']['weight_decay'])
