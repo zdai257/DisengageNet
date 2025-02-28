@@ -90,6 +90,7 @@ def evaluate(config, model, val_loader, device):
                     y_grid = int(gty[0] * 63)
 
                     a_heatmap[y_grid, x_grid] = 1
+                    a_heatmap = TF.gaussian_blur(a_heatmap.unsqueeze(0), kernel_size=[7, 7], sigma=[2.0]).squeeze(0)
                     gt_heatmap.append(a_heatmap)
                     gt_io.append(a_io)
 
@@ -248,7 +249,7 @@ def main():
 
     bce_loss = torch.nn.BCELoss(reduction='mean')  # Binary Cross-Entropy Loss
     # Pixel wise binary CrossEntropy loss
-    pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="sum")
+    pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
 
     # save dir for checkpoints
     os.makedirs(config['logging']['log_dir'], exist_ok=True)
@@ -311,6 +312,8 @@ def main():
                     y_grid = int(gty[0] * 63)
 
                     a_heatmap[y_grid, x_grid] = 1
+                    # add label gaussian blur
+                    a_heatmap = TF.gaussian_blur(a_heatmap.unsqueeze(0), kernel_size=[7, 7], sigma=[2.0]).squeeze(0)
                     gt_heatmap.append(a_heatmap)
                     gt_io.append(a_io)
 
