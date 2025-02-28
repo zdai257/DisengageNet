@@ -1,41 +1,49 @@
-# Project Name
+# Gaze Target 360 
 
-[![Python Version](https://img.shields.io/badge/Python-3.x-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+![openingfig](https://github.com/zdai257/DisengageNet/tree/main/processed/demo.png)
 
 ## Description
 
-A brief description of your project. Describe the purpose and main functionality here.
+This is the software system of GazeTarget360. The aim is to estimate gaze target in 360-degree from a generalized visual scene. GazeTarget360 integrates conditional inference of a ResNet eye-contact detector and an encoder-decoder based in-frame target and out-of-frame target estimator. GazeTarget360 makes a first-of-its-kind system to predict gaze targets from realistic camera footage for robotic perception.
 
-## Table of Contents
+## Prerequisites
 
-- [Installation](#installation)
-- [Usage](#usage)
-- [Features](#features)
-- [Contributing](#contributing)
-- [License](#license)
-- [Acknowledgements](#acknowledgements)
+The following libraries are required
 
-## Installation
+- Python = 3.11
+- pytorch = 2.5.1
+- torchvision = 0.20.1
+- dlib
 
-### Prerequisites
+This work is inspired by (Gaze-LLE)[https://github.com/fkryan/gazelle/tree/main?tab=readme-ov-file] model. You can create their conda environment provided then install *dlib* library. You will need to download VideoAttentionTarget dataset in /VAT and GazeFollow dataset in /GazeFollow under the root folder for training.
 
-- Python 3.x
-- Any required dependencies or libraries.
+## Steps
 
-### Steps
+Use the following command to pre-train the model on GazeFollow
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/username/repository-name.git
-   ```
+```base
+python train_gazefollow.py
+```
 
-2. Execute DisengageNet
-```bash
-   git clone https://github.com/username/repository-name.git
-   ```
+then use the following command to fine-tune the model on VideoAttentionTarget
+
+```base
+python train_vat.py
+```
+
+To evaluate the results on Columbia, EYEDIAP, and MPIIFaceGaze, download the datasets and use *preprocess_x.py* to preprocess the raw data. Use *Eval_x.py* to evaluate the performance. 
+
+To infer gaze targets, run the following command to visualise eye-contact, in-frame, or out-of-frame estimation results with visualization
+
+```base
+python Demo_sys.py
+```
+
+
 
 ## Acknowledgements
 
-Thanks
+Experiments were run on Aston Engineering and Physical Science Machine Learning Server, funded by the EPSRC Core Equipment Fund, Grant EP/V036106/1.
 
