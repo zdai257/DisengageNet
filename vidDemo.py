@@ -6,10 +6,10 @@ import numpy as np
 from Demo_sys import DemoSys
 
 
-demo = DemoSys()
+demo = DemoSys(model_gt="best_shared_epoch_4.pt")
 
 # Step 1: Extract a 15s clip (change start time as needed)
-def extract_clip(input_videofile, output_clipfile, start_time=0, duration=15):
+def extract_clip(input_videofile, output_clipfile, start_time=4, duration=5):
     start_time_sec = start_time
     duration_sec = duration
 
@@ -44,7 +44,7 @@ def extract_clip(input_videofile, output_clipfile, start_time=0, duration=15):
 
 
 # Step 2: Extract frames from the clipped video
-def extract_frames(video_path, output_folder='VidFrames2'):
+def extract_frames(video_path, output_folder):
     os.makedirs(output_folder, exist_ok=True)
     cap = cv2.VideoCapture(video_path)
     frame_id = 0
@@ -59,7 +59,7 @@ def extract_frames(video_path, output_folder='VidFrames2'):
 
 
 # Step 3: Process each frame with the deep learning model
-def process_frames(input_folder='VidFrames2', output_folder='VidDemo2'):
+def process_frames(input_folder, output_folder=None):
     os.makedirs(output_folder, exist_ok=True)
     i = 0
     for frame_file in sorted(os.listdir(input_folder)):
@@ -71,13 +71,11 @@ def process_frames(input_folder='VidFrames2', output_folder='VidDemo2'):
 
         imgname = frame_file.split('.')[0]
 
-        _, _ = demo.conditional_inference(frame_path, threshold=.85, imgname=imgname)
-
-
+        _, _ = demo.conditional_inference(frame_path, threshold=.85, outdir=output_folder, imgname=imgname)
 
 
 # Step 4: Convert processed frames back to video
-def frames_to_video(frames_folder, output_video, fps=30):
+def frames_to_video(frames_folder, output_video, fps=20):
     frame_files = sorted(os.listdir(frames_folder))
     if not frame_files:
         raise ValueError("No frames found in the directory")
@@ -97,21 +95,20 @@ def frames_to_video(frames_folder, output_video, fps=30):
 
 if __name__ == "__main__":
 
-    input_video = "master1.mkv"
-    output_clip = "master1_clip.mp4"
-    #frames_dir = "frames"
-    #processed_frames_dir = "processed_frames"
-    output_video = "vat0_demo.mp4"
+    input_video = "video1082.mp4"  #"TVSeries_dataset_example.mp4"  #"master1.mkv"
+    output_clip = "msdvtt_clip.mp4"  #"master1_clip.mp4"
+
+    output_video = "msdvtt1_demo.mp4"
 
     # Run the pipeline
     # 1. extract a section
-    #extract_clip(input_video, output_clip)
+    extract_clip(input_video, output_clip)
     # 2. extract frames to a folder
-    #extract_frames(output_clip)
+    extract_frames(output_clip, output_folder='VidFrames4')
     # 3. get inferred frames to a new clip
 
-    process_frames()
+    process_frames(input_folder='VidFrames4', output_folder='VidDemo4')
 
-    frames_to_video(frames_folder=join('VidDemo2', 'processed'), output_video=output_video)
+    frames_to_video(frames_folder=join('VidDemo4'), output_video=output_video)
 
     print("Demo video saved as:", output_video)

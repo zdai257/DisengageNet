@@ -58,8 +58,8 @@ class DemoSys():
         self.model_ec.eval()
 
         # load IFT/OFT detector
-        model, transform = get_gazelle_model(config)
-        #model, transform = get_gt360_model(config)
+        #model, transform = get_gazelle_model(config)
+        model, transform = get_gt360_model(config)
         # load a pre-trained model
         #model.load_state_dict(torch.load(model_gt, map_location=self.device, weights_only=False)['model_state_dict'])
         model.load_gazelle_state_dict(torch.load(model_gt, weights_only=True, map_location=torch.device(self.device)))
@@ -69,7 +69,7 @@ class DemoSys():
         self.model_gt.to(self.device)
         self.model_gt.eval()
 
-    def conditional_inference(self, input_data, threshold=0.85, imgname=None):
+    def conditional_inference(self, input_data, threshold=0.85, outdir='processed', imgname=None):
         fig_saved_token = False
 
         frame = Image.open(input_data).convert("RGB")
@@ -142,9 +142,9 @@ class DemoSys():
                         #plt.show()
                         if self.savefigs and not fig_saved_token:
                             if imgname is None:
-                                viz.convert("RGB").save(join("processed", "ift_" + self.saved_path))
+                                viz.convert("RGB").save(join(outdir, "ift_" + self.saved_path))
                             else:
-                                viz.convert("RGB").save(join("VidDemo", "processed", imgname + '.png'))
+                                viz.convert("RGB").save(join(outdir, imgname + '.png'))
                             fig_saved_token = True
                         #plt.close()
                     break
@@ -158,9 +158,9 @@ class DemoSys():
         #frame2show.show()
         if self.savefigs and not fig_saved_token:
             if imgname is None:
-                frame2show.convert("RGB").save(join("processed", "ec_" + self.saved_path))
+                frame2show.convert("RGB").save(join(outdir, "ec_" + self.saved_path))
             else:
-                frame2show.convert("RGB").save(join("VidDemo", "processed", imgname + '.png'))
+                frame2show.convert("RGB").save(join(outdir, imgname + '.png'))
 
         return ecs, heatmaps
         
@@ -222,7 +222,7 @@ class DemoSys():
 
 if __name__ == "__main__":
     
-    demo = DemoSys(model_gt="Best_model_ep1_l232_ap85.pt")
+    demo = DemoSys(model_gt="best_shared_epoch_4.pt")
 
     #img_path = "data/WALIexample0.png"
     #img_path = "data/WALIHRIexample1.png"

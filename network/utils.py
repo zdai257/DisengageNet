@@ -85,7 +85,7 @@ def visualize_heatmap2(pil_image, heatmap, bbox=None, xy=None, dilation_kernel=2
         # Extract RGBA channels
         rgba = (colormap[:, :, :3] * 255).astype(np.uint8)  # RGB channels
         alpha = (colormap[:, :, 2] < colormap[:, :, 0]) * 255  # Less blue -> more opacity
-        heatmap = Image.fromarray(np.dstack((rgba, alpha)).astype(np.uint8), "RGBA")
+        heatmap = Image.fromarray(np.dstack((rgba, 0.5 * alpha)).astype(np.uint8), "RGBA")
 
     overlay_image = Image.alpha_composite(pil_image.convert("RGBA"), heatmap)
 
