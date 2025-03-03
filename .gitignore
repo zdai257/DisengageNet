@@ -13,5 +13,8 @@ data/
 *.parquet
 .pt
 .pth
-.jpg
-.png
+*.jpg
+*.png
+*.mkv
+*.mp4
+

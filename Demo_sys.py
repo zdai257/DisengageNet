@@ -58,18 +58,20 @@ class DemoSys():
         self.model_ec.eval()
 
         # load IFT/OFT detector
-        #model, transform = get_gazelle_model(config)
-        model, transform = get_gt360_model(config)
+        model, transform = get_gazelle_model(config)
+        #model, transform = get_gt360_model(config)
         # load a pre-trained model
-        model.load_state_dict(torch.load(model_gt, map_location=self.device, weights_only=False)['model_state_dict'])
-        #model.load_gazelle_state_dict(torch.load(model_gt, weights_only=True, map_location=torch.device(self.device)))
+        #model.load_state_dict(torch.load(model_gt, map_location=self.device, weights_only=False)['model_state_dict'])
+        model.load_gazelle_state_dict(torch.load(model_gt, weights_only=True, map_location=torch.device(self.device)))
         self.model_gt = model
         self.gt_transform = transform
 
         self.model_gt.to(self.device)
         self.model_gt.eval()
 
-    def conditional_inference(self, input_data, threshold=0.85):
+    def conditional_inference(self, input_data, threshold=0.85, imgname=None):
+        fig_saved_token = False
+
         frame = Image.open(input_data).convert("RGB")
 
         # resize image
@@ -114,6 +116,7 @@ class DemoSys():
                     if inout < 0.5:  # out of frame (OFT)
                         heatmaps[b] = 0
 
+                        print("OFT with prob = ", inout)
                         # Draw a semi-transparent red rectangle on the overlay
                         draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(255, 0, 0, 70), outline=(0, 255, 0), width=7)
 
@@ -121,6 +124,8 @@ class DemoSys():
                         heatmap = preds['heatmap'][0][i].detach()
 
                         heatmaps[b] = heatmap
+
+                        print("IFT with prob = ", inout)
 
                         # convert heatmap to argmax (x,y) coordinate points
                         bbox_norm = (b[0]/w, b[1]/h, b[2]/w, b[3]/h)
@@ -132,24 +137,31 @@ class DemoSys():
                         x, y = float(pred_x), float(pred_y)
 
                         viz = visualize_heatmap2(frame, heatmap, bbox=bbox_norm, xy=(x * w, y * h),
-                                                 dilation_kernel=5, blur_radius=1.3)
-                        plt.imshow(viz)
-                        plt.show()
-                        if self.savefigs:
-
-                            viz.convert("RGB").save(join("processed", "ift_" + self.saved_path))
-                        plt.close()
+                                                 dilation_kernel=5, blur_radius=1.3, transparent_bg=True)
+                        #plt.imshow(viz)
+                        #plt.show()
+                        if self.savefigs and not fig_saved_token:
+                            if imgname is None:
+                                viz.convert("RGB").save(join("processed", "ift_" + self.saved_path))
+                            else:
+                                viz.convert("RGB").save(join("VidDemo", "processed", imgname + '.png'))
+                            fig_saved_token = True
+                        #plt.close()
                     break
 
         for b in ecs.keys():
 
             # Draw a semi-transparent green rectangle on the overlay
-            draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(0, 255, 0, 70), outline=(0, 255, 0), width=6)
+            draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(0, 255, 0, 70), outline=(0, 255, 0), width=7)
 
         frame2show = Image.alpha_composite(frame.convert('RGBA'), overlay)
-        frame2show.show()
-        if self.savefigs:
-            frame2show.convert("RGB").save(join("processed", "ec_" + self.saved_path))
+        #frame2show.show()
+        if self.savefigs and not fig_saved_token:
+            if imgname is None:
+                frame2show.convert("RGB").save(join("processed", "ec_" + self.saved_path))
+            else:
+                frame2show.convert("RGB").save(join("VidDemo", "processed", imgname + '.png'))
+
         return ecs, heatmaps
         
     def ec_infer(self, frame, bbox_scalar=0.2):

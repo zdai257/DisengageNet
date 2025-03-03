@@ -51,7 +51,7 @@ def clip_line_to_bbox(x1, y1, x2, y2, xmin, ymin, xmax, ymax):
         y1 = ymax
     return int(x1), int(y1)
 
-def visualize_heatmap2(pil_image, heatmap, bbox=None, xy=None, dilation_kernel=2, blur_radius=5, color="lime"):
+def visualize_heatmap2(pil_image, heatmap, bbox=None, xy=None, dilation_kernel=2, blur_radius=5, color="lime", transparent_bg=None):
     dot_radius = 5
 
     if isinstance(heatmap, torch.Tensor):
@@ -72,10 +72,21 @@ def visualize_heatmap2(pil_image, heatmap, bbox=None, xy=None, dilation_kernel=2
     heatmap = heatmap.resize(pil_image.size, Image.Resampling.BILINEAR)
     #heatmap = heatmap.resize(pil_image.size, Image.Resampling.BICUBIC)
 
-    heatmap = plt.cm.jet(np.array(heatmap) / 255.)
-    heatmap = (heatmap[:, :, :3] * 255).astype(np.uint8)
-    heatmap = Image.fromarray(heatmap).convert("RGBA")
-    heatmap.putalpha(128)
+    if transparent_bg is None:
+        heatmap = plt.cm.jet(np.array(heatmap) / 255.)
+        heatmap = (heatmap[:, :, :3] * 255).astype(np.uint8)
+        heatmap = Image.fromarray(heatmap).convert("RGBA")
+        heatmap.putalpha(128)
+
+    else:
+        heatmap = np.array(heatmap) / 255.
+        colormap = plt.cm.jet(heatmap)
+
+        # Extract RGBA channels
+        rgba = (colormap[:, :, :3] * 255).astype(np.uint8)  # RGB channels
+        alpha = (colormap[:, :, 2] < colormap[:, :, 0]) * 255  # Less blue -> more opacity
+        heatmap = Image.fromarray(np.dstack((rgba, alpha)).astype(np.uint8), "RGBA")
+
     overlay_image = Image.alpha_composite(pil_image.convert("RGBA"), heatmap)
 
     if bbox is not None:
