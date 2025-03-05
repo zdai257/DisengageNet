@@ -13,7 +13,7 @@ from network.network_builder import get_gazelle_model
 #from network.network_builder_update import get_gt360_model
 from network.network_builder_update2 import get_gt360_model
 from network.ec_network_builder import get_ec_model
-from network.utils import visualize_heatmap, visualize_heatmap2
+from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3
 
 
 CNN_FACE_MODEL = 'model/mmod_human_face_detector.dat'  # from http://dlib.net/files/mmod_human_face_detector.dat.bz2
@@ -80,9 +80,12 @@ class DemoSys():
         w, h = frame.width, frame.height
 
         frame0 = frame.convert("RGBA")
-        # Create a transparent overlay for drawing
-        overlay = Image.new("RGBA", frame0.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
+
+        final_overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+
+        # Create a series of transparent overlay for drawing
+        overlays = []
+        viz_overlays = []
 
         with torch.no_grad():
             
@@ -117,6 +120,8 @@ class DemoSys():
                         heatmaps[b] = 0
 
                         print("OFT with prob = ", inout)
+                        overlays.append(Image.new("RGBA", frame0.size, (0, 0, 0, 0)))
+                        draw = ImageDraw.Draw(overlays[-1])
                         # Draw a semi-transparent red rectangle on the overlay
                         draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(255, 0, 0, 70), outline=(0, 255, 0), width=7)
 
@@ -136,29 +141,43 @@ class DemoSys():
                         pred_y = pred_y / 64.
                         x, y = float(pred_x), float(pred_y)
 
-                        viz = visualize_heatmap2(frame, heatmap, bbox=bbox_norm, xy=(x * w, y * h),
+                        viz = visualize_heatmap3(frame, heatmap, bbox=bbox_norm, xy=(x * w, y * h),
                                                  dilation_kernel=5, blur_radius=1.3, transparent_bg=True)
+
+                        viz_overlays.append(viz)
                         #plt.imshow(viz)
                         #plt.show()
+
+                        '''
                         if self.savefigs and not fig_saved_token:
                             if imgname is None:
                                 viz.convert("RGB").save(join(outdir, "ift_" + self.saved_path))
                             else:
                                 viz.convert("RGB").save(join(outdir, imgname + '.png'))
                             fig_saved_token = True
+                        '''
                         #plt.close()
-                    break
+                    #break
+
+                for viz_overlay in viz_overlays:
+                    final_overlay = Image.alpha_composite(final_overlay, viz_overlay)
 
         for b in ecs.keys():
-
+            overlays.append(Image.new("RGBA", frame0.size, (0, 0, 0, 0)))
+            draw = ImageDraw.Draw(overlays[-1])
             # Draw a semi-transparent green rectangle on the overlay
             draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(0, 255, 0, 70), outline=(0, 255, 0), width=7)
 
-        frame2show = Image.alpha_composite(frame.convert('RGBA'), overlay)
+        for overlay in overlays:
+            # iteratively add overlays
+            final_overlay = Image.alpha_composite(final_overlay, overlay)
+
+        frame2show = Image.alpha_composite(frame.convert('RGBA'), final_overlay)
         #frame2show.show()
+
         if self.savefigs and not fig_saved_token:
             if imgname is None:
-                frame2show.convert("RGB").save(join(outdir, "ec_" + self.saved_path))
+                frame2show.convert("RGB").save(join(outdir, "gt360_" + self.saved_path))
             else:
                 frame2show.convert("RGB").save(join(outdir, imgname + '.png'))
 

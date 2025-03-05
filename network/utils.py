@@ -84,8 +84,8 @@ def visualize_heatmap2(pil_image, heatmap, bbox=None, xy=None, dilation_kernel=2
 
         # Extract RGBA channels
         rgba = (colormap[:, :, :3] * 255).astype(np.uint8)  # RGB channels
-        alpha = (colormap[:, :, 2] < colormap[:, :, 0]) * 255  # Less blue -> more opacity
-        heatmap = Image.fromarray(np.dstack((rgba, 0.5 * alpha)).astype(np.uint8), "RGBA")
+        alpha = (colormap[:, :, 2] < colormap[:, :, 0]) * 64  # Less blue -> more opacity at most 50%
+        heatmap = Image.fromarray(np.dstack((rgba, alpha)).astype(np.uint8), "RGBA")
 
     overlay_image = Image.alpha_composite(pil_image.convert("RGBA"), heatmap)
 
@@ -111,6 +111,70 @@ def visualize_heatmap2(pil_image, heatmap, bbox=None, xy=None, dilation_kernel=2
                 fill=color, outline=color
             )
     return overlay_image
+
+def visualize_heatmap3(pil_image, heatmap, bbox=None, xy=None, dilation_kernel=2, blur_radius=5, color="lime", transparent_bg=None):
+    dot_radius = 5
+
+    if isinstance(heatmap, torch.Tensor):
+        heatmap = heatmap.detach().cpu().numpy()
+    # Convert heatmap to uint8 format
+    heatmap = (heatmap * 255).astype(np.uint8)
+
+    # Use a circular kernel for dilation (ensures rounded spread)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_kernel, dilation_kernel))
+    heatmap = cv2.dilate(heatmap, kernel, iterations=1)
+
+    # Apply Gaussian blur to smooth the spread (avoids blocky grid effects)
+    heatmap = cv2.GaussianBlur(heatmap, (0, 0), sigmaX=blur_radius, sigmaY=blur_radius)
+
+    # Convert heatmap back to PIL image
+    heatmap = Image.fromarray(heatmap)
+
+    heatmap = heatmap.resize(pil_image.size, Image.Resampling.BILINEAR)
+    #heatmap = heatmap.resize(pil_image.size, Image.Resampling.BICUBIC)
+
+    if transparent_bg is None:
+        heatmap = plt.cm.jet(np.array(heatmap) / 255.)
+        heatmap = (heatmap[:, :, :3] * 255).astype(np.uint8)
+        heatmap = Image.fromarray(heatmap).convert("RGBA")
+        heatmap.putalpha(128)
+
+    else:
+        heatmap = np.array(heatmap) / 255.
+        colormap = plt.cm.jet(heatmap)
+
+        # Extract RGBA channels
+        rgba = (colormap[:, :, :3] * 255).astype(np.uint8)  # RGB channels
+        alpha = (colormap[:, :, 2] < colormap[:, :, 0]) * 64  # Less blue -> more opacity at most 50%
+        heatmap = Image.fromarray(np.dstack((rgba, alpha)).astype(np.uint8), "RGBA")
+
+    #overlay_image = Image.alpha_composite(pil_image.convert("RGBA"), heatmap)
+    trans_overlay = Image.new("RGBA", pil_image.size, (0, 0, 0, 0))
+
+    if bbox is not None:
+        width, height = pil_image.size
+        xmin, ymin, xmax, ymax = bbox
+        draw = ImageDraw.Draw(trans_overlay)
+        draw.rectangle([xmin * width, ymin * height, xmax * width, ymax * height], outline=color, width=3)
+        if xy is not None:
+            center_x = int((xmin + xmax) / 2 * width)
+            center_y = int((ymin + ymax) / 2 * height)
+
+            # Compute clipped start point at the bbox boundary
+            start_x, start_y = clip_line_to_bbox(center_x, center_y, xy[0], xy[1],
+                                                 int(xmin * width), int(ymin * height), int(xmax * width), int(ymax * height))
+            # Draw the line from bbox center to gaze point
+            draw.line([(start_x, start_y), (xy[0], xy[1])], fill=color, width=3)
+
+            # Draw a dot at the gaze point
+            draw.ellipse(
+                [(xy[0] - dot_radius, xy[1] - dot_radius),
+                 (xy[0] + dot_radius, xy[1] + dot_radius)],
+                fill=color, outline=color
+            )
+
+    trans_overlay = Image.alpha_composite(trans_overlay.convert("RGBA"), heatmap)
+    return trans_overlay
 
 def stack_and_pad(tensor_list):
     max_size = max([t.shape[0] for t in tensor_list])

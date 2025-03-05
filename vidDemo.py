@@ -9,7 +9,7 @@ from Demo_sys import DemoSys
 demo = DemoSys(model_gt="best_shared_epoch_4.pt")
 
 # Step 1: Extract a 15s clip (change start time as needed)
-def extract_clip(input_videofile, output_clipfile, start_time=4, duration=5):
+def extract_clip(input_videofile, output_clipfile, start_time=4, duration=6):
     start_time_sec = start_time
     duration_sec = duration
 
@@ -63,10 +63,10 @@ def process_frames(input_folder, output_folder=None):
     os.makedirs(output_folder, exist_ok=True)
     i = 0
     for frame_file in sorted(os.listdir(input_folder)):
-        i += 1
-        if i < 0:
+        #i += 1
+        #if i<0:
             # break
-            continue
+            #continue
         frame_path = os.path.join(input_folder, frame_file)
 
         imgname = frame_file.split('.')[0]
@@ -95,20 +95,20 @@ def frames_to_video(frames_folder, output_video, fps=20):
 
 if __name__ == "__main__":
 
-    input_video = "video1082.mp4"  #"TVSeries_dataset_example.mp4"  #"master1.mkv"
-    output_clip = "msdvtt_clip.mp4"  #"master1_clip.mp4"
+    input_video = "TVSeries_dataset_example.mp4"  #"TVSeries_dataset_example.mp4"  #"master1.mkv"
+    output_clip = "youtube1_clip.mp4"  #"master1_clip.mp4"
 
-    output_video = "msdvtt1_demo.mp4"
+    output_video = "youtube1_demo2.mp4"
 
     # Run the pipeline
     # 1. extract a section
     extract_clip(input_video, output_clip)
     # 2. extract frames to a folder
-    extract_frames(output_clip, output_folder='VidFrames4')
+    extract_frames(output_clip, output_folder='VidFrames6')
     # 3. get inferred frames to a new clip
 
-    process_frames(input_folder='VidFrames4', output_folder='VidDemo4')
+    process_frames(input_folder='VidFrame6', output_folder='VidDemo6')
 
-    frames_to_video(frames_folder=join('VidDemo4'), output_video=output_video)
+    frames_to_video(frames_folder=join('VidDemo6'), output_video=output_video)
 
     print("Demo video saved as:", output_video)
