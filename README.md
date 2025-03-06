@@ -1,8 +1,10 @@
-# Gaze Target 360 
+# Gaze Target 360
 
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-![openingfig](https://github.com/zdai257/DisengageNet/blob/main/processed/demo0.jpg)
+![Demo1](gifs/demo1.gif)
+
+![Demo1](gifs/demo2.gif)
 
 ## Description
 
@@ -41,7 +43,7 @@ To infer gaze targets, run the following command to visualise eye-contact, in-fr
 python Demo_sys.py
 ```
 
-
+![openingfig](https://github.com/zdai257/DisengageNet/blob/main/processed/demo0.jpg)
 
 ## Acknowledgements
 
