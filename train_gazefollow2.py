@@ -42,6 +42,60 @@ class GazeFollow(torch.utils.data.Dataset):
         return len(self.frames)
 
 
+# Chong's extended GazeFollow
+class GazeFollowExtended(torch.utils.data.Dataset):
+    """
+    Format:
+    [image_path,id,body_bbox_x,body_bbox_y,body_bbox_width,body_bbox_height,eye_x,eye_y,gaze_x,gaze_y,head_bbox_x_min,head_bbox_y_min,head_bbox_x_max,head_bbox_y_max,in_or_out,source,meta]
+    Description: (NO 'in_or_out' field for test split)
+    <head_bbox_x_min,head_bbox_y_min,head_bbox_x_max,head_bbox_y_max,in_or_out> are the added fields to GazeFollow.
+    Head bounding box <head_bbox_x_min,head_bbox_y_min,head_bbox_x_max,head_bbox_y_max> is in the image pixel coordinate.
+    <in_or_out> is 1 for inside, 0 for outside cases. There are a few -1's to denote invalid case (e.g., no human at all, upper body is cut, etc).
+    """
+    def __init__(self, root_path, img_transform, split='train'):
+        self.frames = []
+        with open(join(root_path, "{}_annotations_release.txt".format(split)), "r") as f:
+            for line in f:
+                frame = {}
+                anno_lst = line.strip().split(',')
+
+                if split == 'train':
+                    frame['inout'] = float(anno_lst[14])
+                    if frame['inout'] == -1:
+                        continue
+                else:
+                    frame['inout'] = None
+
+                frame['path'] = anno_lst[0]
+                frame['gazex_norm'] = float(anno_lst[8])
+                frame['gazey_norm'] = float(anno_lst[9])
+                frame['bbox_pixel'] = [float(anno_lst[10]), float(anno_lst[11]), float(anno_lst[12]), float(anno_lst[13])]
+
+                self.frames.append(frame)
+
+        self.root_path = root_path
+        self.transform = img_transform
+
+    def __getitem__(self, idx):
+        frame = self.frames[idx]
+
+        image = Image.open(join(self.root_path, frame['path'])).convert("RGB")
+        w, h = image.width, image.height
+
+        image = self.transform(image)
+        # normalise bbox
+        bbox = [frame['bbox_pixel'][0]/w, frame['bbox_pixel'][1]/h, frame['bbox_pixel'][2]/w, frame['bbox_pixel'][3]/h]
+        gazex = frame['gazex_norm']
+        gazey = frame['gazey_norm']
+
+        # involve 'inout' in training??
+        inout = frame['inout']
+        return image, bbox, gazex, gazey, h, w
+
+    def __len__(self):
+        return len(self.frames)
+
+
 def collate(batch):
     images, bbox, gazex, gazey, height, width = zip(*batch)
     return torch.stack(images), list(bbox), list(gazex), list(gazey), list(height), list(width)
@@ -184,12 +238,14 @@ def main():
     my_transform = gazelle_transform
 
     # apply my_transform
-    train_dataset = GazeFollow(root_path=config['data']['pre_train_path'],
+    train_dataset = GazeFollowExtended(root_path=config['data']['pre_train_path'],
                                img_transform=my_transform,
                                split='train')
-    test_dataset = GazeFollow(root_path=config['data']['pre_test_path'],
+    test_dataset = GazeFollowExtended(root_path=config['data']['pre_test_path'],
                               img_transform=my_transform,
                               split='test')
+    #train_dataset = GazeFollowExtended('gazefollow_extended', img_transform=my_transform, split='train')
+    #test_dataset = GazeFollowExtended('gazefollow_extended', img_transform=my_transform, split='test')
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,

@@ -1,7 +1,7 @@
 # General Configuration
 model:
   name: "gazelle_dinov2_vitl14_inout"
-  pretrained_path: "best_shared_epoch_4.pt"  #"gazelle_dinov2_vitl14_inout.pt"
+  pretrained_path: "gazelle_dinov2_vitl14_inout.pt"  #"best_shared_epoch_4.pt"
   bce_weight: 1.0
   mse_weight: 1.0
   encoder:

@@ -1,11 +1,63 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision
 from timm.models.vision_transformer import Block
 import math
 import yaml
 import network.utils as utils
 from network.backbone import DinoV2Backbone
+
+
+class MixtureOfExperts(nn.Module):
+    def __init__(self, num_routed_experts, num_shared_experts, in_channels, out_channels):
+        super(MixtureOfExperts, self).__init__()
+        self.num_routed_experts = num_routed_experts
+        self.num_shared_experts = num_shared_experts
+
+        # Routed Experts
+        self.routed_experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+                nn.ReLU(inplace=True)
+            )
+            for _ in range(num_routed_experts)
+        ])
+
+        # Shared Experts
+        self.shared_experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+                nn.ReLU(inplace=True)
+            )
+            for _ in range(num_shared_experts)
+        ])
+
+        # Gating mechanism for routed experts
+        self.gate = nn.Sequential(
+            nn.Conv2d(in_channels, num_routed_experts, kernel_size=1),
+            nn.Softmax(dim=1)
+        )
+
+    def forward(self, x):
+        # Compute shared expert outputs
+        shared_outputs = [expert(x) for expert in self.shared_experts]
+        shared_output = torch.stack(shared_outputs, dim=1).mean(dim=1)  # Average shared expert outputs
+
+        # Compute routed expert outputs
+        routed_outputs = [expert(x) for expert in self.routed_experts]
+        routed_outputs = torch.stack(routed_outputs, dim=1)  # Shape: [batch, num_routed_experts, out_channels, H, W]
+
+        # Compute gating weights for routed experts
+        gate_weights = self.gate(x)  # Shape: [batch, num_routed_experts, H, W]
+        gate_weights = gate_weights.unsqueeze(2)  # Shape: [batch, num_routed_experts, 1, H, W]
+
+        # Combine routed expert outputs using gating weights
+        routed_output = (routed_outputs * gate_weights).sum(dim=1)  # Shape: [batch, out_channels, H, W]
+
+        # Combine shared and routed outputs
+        output = shared_output + routed_output  # Add or concatenate, depending on the use case
+        return output
 
 #############################################
 # Transformer Block Alternatives
@@ -337,6 +389,213 @@ class GazeLLE(nn.Module):
             current_state_dict[k] = ckpt_state_dict[k]
         self.load_state_dict(current_state_dict, strict=False)
 
+
+#############################################
+# TODO: GTMoE model with ConvMoE
+#############################################
+class GTMoE(nn.Module):
+    def __init__(self, backbone, in_channels=768, num_routed_experts=4, num_shared_experts=2,
+                 inout=False, dim=256, num_layers=3, in_size=(448, 448), out_size=(64, 64), transformer_type=None):
+        super(GTMoE).__init__()
+        self.backbone = backbone
+        self.dim = dim
+        self.num_layers = num_layers
+        self.featmap_h, self.featmap_w = backbone.get_out_size(in_size)
+        self.in_size = in_size
+        self.out_size = out_size
+        self.inout = inout
+
+        # Multi-scale fusion module (lightweight version)
+        multi_scale_channels = backbone.get_multi_scale_channels()
+        self.ms_fusion = MultiScaleFusionLite(
+            in_channels_list=multi_scale_channels,
+            out_channels=self.dim,
+            target_size=(self.featmap_h, self.featmap_w)
+        )
+
+        # Positional encoding
+        self.register_buffer(
+            "pos_embed",
+            positionalencoding2d(self.dim, self.featmap_h, self.featmap_w)
+                .squeeze(dim=0).squeeze(dim=0)
+        )
+
+        if transformer_type is None:
+            # Create one vanilla block and share it across num_layers iterations.
+            vanilla_block = Block(dim=self.dim, num_heads=8, mlp_ratio=4, drop_path=0.1)
+            self.transformer = SharedTransformer(vanilla_block, num_layers)
+        else:
+            raise ValueError("Unknown transformer type: {}".format(transformer_type))
+
+        # MoEs
+        self.moe1 = MixtureOfExperts(num_routed_experts, num_shared_experts, in_channels, 256)
+        self.moe2 = MixtureOfExperts(num_routed_experts, num_shared_experts, 256, 128)
+        self.moe3 = MixtureOfExperts(num_routed_experts, num_shared_experts, 128, 256)
+        self.final_conv = nn.Conv2d(self.dim, 1, kernel_size=1)  # Output a single channel heatmap
+
+        # Heatmap head.
+        self.heatmap_head = nn.Sequential(
+            nn.ConvTranspose2d(dim, dim, kernel_size=2, stride=2),
+            nn.Conv2d(dim, 1, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+        self.head_token = nn.Embedding(1, self.dim)
+        if self.inout:
+            self.inout_head = nn.Sequential(
+                nn.Linear(self.dim, 128),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(128, 1),
+                nn.Sigmoid()
+            )
+            self.inout_token = nn.Embedding(1, self.dim)
+
+    def forward(self, input):
+        # input["images"]: [B, 3, H, W]
+        # input["bboxes"]: list of list of bbox tuples per image in normalized coordinates
+        num_ppl_per_img = [len(bbox_list) for bbox_list in input["bboxes"]]
+
+        # Multi-scale features and fusion
+        multi_scale_feats = self.backbone.forward(input["images"])
+        x = self.ms_fusion(multi_scale_feats)  # [B, dim, featmap_h, featmap_w]
+
+        x = x + self.pos_embed
+        x = utils.repeat_tensors(x, num_ppl_per_img)
+
+        head_maps = torch.cat(self.get_input_head_maps(input["bboxes"]), dim=0).to(x.device)
+        head_map_embeddings = head_maps.unsqueeze(dim=1) * self.head_token.weight.unsqueeze(-1).unsqueeze(-1)
+        x = x + head_map_embeddings
+
+        # Flatten spatial dimensions for transformer input.
+        x = x.flatten(start_dim=2).permute(0, 2, 1)  # [B, H*W, dim]
+
+        if self.inout:
+            x = torch.cat([self.inout_token.weight.unsqueeze(dim=0).repeat(x.shape[0], 1, 1), x], dim=1)
+
+        x = self.transformer(x)
+
+        if self.inout:
+            inout_tokens = x[:, 0, :]
+            inout_preds = self.inout_head(inout_tokens).squeeze(dim=-1)
+            inout_preds = utils.split_tensors(inout_preds, num_ppl_per_img)
+            x = x[:, 1:, :]
+
+        x = x.reshape(x.shape[0], self.featmap_h, self.featmap_w, x.shape[2]).permute(0, 3, 1, 2)
+        # MoEs
+        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
+        x = self.moe1(x)
+        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
+        x = self.moe2(x)
+        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
+        x = self.moe3(x)
+        x = self.final_conv(x)
+
+        x = self.heatmap_head(x).squeeze(dim=1)
+        x = torchvision.transforms.functional.resize(x, self.out_size)
+        heatmap_preds = utils.split_tensors(x, num_ppl_per_img)
+
+        return {"heatmap": heatmap_preds, "inout": inout_preds if self.inout else None}
+
+    def get_input_head_maps(self, bboxes):
+        head_maps = []
+        for bbox_list in bboxes:
+            img_head_maps = []
+            for bbox in bbox_list:
+                if bbox is None:
+                    img_head_maps.append(torch.zeros(self.featmap_h, self.featmap_w))
+                else:
+                    xmin, ymin, xmax, ymax = bbox
+                    width, height = self.featmap_w, self.featmap_h
+                    xmin = round(xmin * width)
+                    ymin = round(ymin * height)
+                    xmax = round(xmax * width)
+                    ymax = round(ymax * height)
+                    head_map = torch.zeros((height, width))
+                    head_map[ymin:ymax, xmin:xmax] = 1
+                    img_head_maps.append(head_map)
+            head_maps.append(torch.stack(img_head_maps))
+        return head_maps
+
+    def get_gazelle_state_dict(self, include_backbone=False):
+        if include_backbone:
+            return self.state_dict()
+        else:
+            return {k: v for k, v in self.state_dict().items() if not k.startswith("backbone")}
+
+    def load_gazelle_state_dict(self, ckpt_state_dict, include_backbone=False):
+        current_state_dict = self.state_dict()
+        keys1 = current_state_dict.keys()
+        keys2 = ckpt_state_dict.keys()
+        if not include_backbone:
+            keys1 = set([k for k in keys1 if not k.startswith("backbone")])
+            keys2 = set([k for k in keys2 if not k.startswith("backbone")])
+        else:
+            keys1 = set(keys1)
+            keys2 = set(keys2)
+        if len(keys2 - keys1) > 0:
+            print("WARNING unused keys in provided state dict: ", keys2 - keys1)
+        if len(keys1 - keys2) > 0:
+            print("WARNING provided state dict does not have values for keys: ", keys1 - keys2)
+        for k in list(keys1 & keys2):
+            current_state_dict[k] = ckpt_state_dict[k]
+        self.load_state_dict(current_state_dict, strict=False)
+
+#############################################
+# TODO: GTMoE model with Feed-forward MoE
+#############################################
+class Expert(nn.Module):
+    def __init__(self, input_dim, hidden_dim):
+        super(Expert, self).__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, input_dim)
+
+    def forward(self, x):
+        return self.fc2(F.relu(self.fc1(x)))
+
+
+class MoEBlock(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_experts, top_k):
+        super(MoEBlock, self).__init__()
+        self.experts = nn.ModuleList([Expert(input_dim, hidden_dim) for _ in range(num_experts)])
+        self.gate = nn.Linear(input_dim, num_experts)
+        self.top_k = top_k
+
+    def forward(self, x):
+        # Gating mechanism
+        gate_scores = F.softmax(self.gate(x), dim=-1)
+        top_k_gates, top_k_indices = torch.topk(gate_scores, self.top_k, dim=-1)
+
+        # Apply experts
+        expert_outputs = torch.stack([expert(x) for expert in self.experts], dim=1)
+        output = torch.zeros_like(x)
+        for i in range(self.top_k):
+            output += top_k_gates[:, :, i].unsqueeze(-1) * expert_outputs.gather(1, top_k_indices[:, :, i].unsqueeze(
+                -1).expand(-1, -1, x.size(-1)))
+
+        return output
+
+class GTMoE2(nn.Module):
+    def __init__(self, backbone, input_dim=768, hidden_dim=256, num_routed_experts=4, num_shared_experts=2, top_k=3,
+                 inout=False, dim=256, num_layers=3, in_size=(448, 448), out_size=(64, 64), transformer_type=None):
+        super(GTMoE2).__init__()
+        self.backbone = backbone
+        self.dim = dim
+        self.num_layers = num_layers
+        self.featmap_h, self.featmap_w = backbone.get_out_size(in_size)
+        self.in_size = in_size
+        self.out_size = out_size
+        self.inout = inout
+
+        self.moe_block = MoEBlock(input_dim, hidden_dim, num_routed_experts, top_k)
+        self.norm = nn.LayerNorm(input_dim)
+
+    def forward(self, x):
+        x = self.moe_block(x)
+        x = self.norm(x)
+        x = x.permute(0, 3, 1, 2)  # Adjust dimensions for Conv2d
+
+        pass
+
 #############################################
 # Positional Encoding (unchanged)
 #############################################
@@ -357,6 +616,16 @@ def positionalencoding2d(d_model, height, width):
 #############################################
 # Step 4: Update Model Creation Functions
 #############################################
+
+def get_gtmoe_model(configuration):
+    factory = {
+        "gazelle_dinov2_vitb14": gazelle_dinov2_vitb14,
+        "gazelle_dinov2_vitl14": gazelle_dinov2_vitl14,
+        "gazelle_dinov2_vitb14_inout": gazelle_dinov2_vitb14_inout,
+        "gazelle_dinov2_vitl14_inout": gazelle_dinov2_vitl14_inout,
+    }
+    assert configuration['model']['name'] in factory.keys(), "invalid model name"
+    return factory[configuration['model']['name']]()
 
 def get_gt360_model(configuration):
     factory = {
@@ -390,4 +659,10 @@ def gazelle_dinov2_vitl14_inout(transformer_type="shared"):  # performer
     backbone = DinoV2BackboneMultiScale('dinov2_vitl14')
     transform = backbone.get_transform((448, 448))
     model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)
+    return model, transform
+
+def moe_dinov2_vitl14_inout():  # performer
+    backbone = DinoV2BackboneMultiScale('dinov2_vitl14')
+    transform = backbone.get_transform((448, 448))
+    model = GTMoE(backbone, inout=True)
     return model, transform
