@@ -24,15 +24,15 @@ data:
   test_path: "./VAT"       # Path to preprocessed test dataset
   mean: [0.485, 0.456, 0.406]       # Normalization mean for images (ImageNet values)
   std: [0.229, 0.224, 0.225]        # Normalization std for images (ImageNet values)
-  pre_train_path: "./GazeFollow"
-  pre_test_path: "./GazeFollow"
+  pre_train_path: "./gazefollow_extended"  #"./GazeFollow"
+  pre_test_path: "./gazefollow_extended"  #"./GazeFollow"
 
 train:
-  batch_size: 24                    # Batch size for training
+  batch_size: 32                    # Batch size for training
   epochs: 15                    # Number of training epochs
-  lr: 0.000001                         # 0.00001
+  lr: 0.00001                         # 0.00001
   inout_lr: 0.01
-  fuse_lr: 0.000001
+  fuse_lr: 0.01
   optimizer: "AdamW"                # Optimizer type (adam, adamw, sgd, etc.)
   weight_decay: 0.0001                # Weight decay for optimizer
   lr_scheduler:                     # Learning rate scheduler settings
@@ -42,19 +42,19 @@ train:
     min_lr: 1e-6                    # Minimum learning rate for cosine/other schedulers
   gradient_clipping: 5.0            # Gradient clipping threshold
   # GazeFollow pretrain params
-  pre_lr: 0.001
+  pre_lr: 0.01
   pre_batch_size: 60   # 60
-  pre_epochs: 15   # 15
+  pre_epochs: 12   # 15
   pre_optimizer: "AdamW"
   pre_lr_scheduler:
     type: "cosine"                  # cosine / linear
-    step_size: 10                   # Step size for step scheduler
+    step_size: 5                   # Step size for step scheduler
     gamma: 0.1                      # Decay factor for step/exponential scheduler
-    min_lr: 1e-5                    # Minimum learning rate for cosine/other schedulers
+    min_lr: 1e-6                    # Minimum learning rate for cosine/other schedulers
 
 eval:
   checkpoint: "gazelle_large_vitl14_inout.pt"  # Path to the checkpoint for evaluation
-  batch_size: 32                    # Batch size for evaluation
+  batch_size: 60                    # Batch size for evaluation
   metrics:                          # Evaluation metrics
     - accuracy
     - precision
@@ -64,11 +64,11 @@ inference:
   checkpoint: "gazelle_dinov2_vitl14_inout.pt"
 
 logging:
-  log_dir: "results/final21/"   # "results/checkpoints20/"
-  pre_dir: "results/prechecks20/"
+  log_dir: "results/final40/"   # "results/checkpoints20/"
+  pre_dir: "results/prechecks40/"
   save_every: 5
 
 hardware:
-  device: "cuda"                    # Device to use (cuda, cpu)
+  device: "cuda:2"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading

@@ -18,6 +18,8 @@ from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model
 from eval import eval_pretrain_gazefollow
 
+LOSS_SCALAR = 10000
+
 
 class GazeFollow(torch.utils.data.Dataset):
     def __init__(self, root_path, img_transform, split='train'):
@@ -67,8 +69,8 @@ class GazeFollowExtended(torch.utils.data.Dataset):
                     frame['inout'] = None
 
                 frame['path'] = anno_lst[0]
-                frame['gazex_norm'] = float(anno_lst[8])
-                frame['gazey_norm'] = float(anno_lst[9])
+                frame['gazex_norm'] = [float(anno_lst[8])]
+                frame['gazey_norm'] = [float(anno_lst[9])]
                 frame['bbox_pixel'] = [float(anno_lst[10]), float(anno_lst[11]), float(anno_lst[12]), float(anno_lst[13])]
 
                 self.frames.append(frame)
@@ -134,12 +136,12 @@ def evaluate(config, model, val_loader, device):
 
                     gt_heatmap[y_grid, x_grid] = 1
                     # Gaussian blur
-                    gt_heatmap = TF.gaussian_blur(gt_heatmap.unsqueeze(0), kernel_size=[5, 5], sigma=[3.0]).squeeze(0)
+                    gt_heatmap = TF.gaussian_blur(gt_heatmap.unsqueeze(0), kernel_size=[7, 7], sigma=[1.0]).squeeze(0)
                 gt_gaze_xy.append(gt_heatmap)
 
             gt_heatmaps = torch.stack(gt_gaze_xy)
 
-            loss = val_pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * 10000
+            loss = val_pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
             validation_loss += loss.item()
 
             pbar.update(1)
@@ -275,6 +277,8 @@ def main():
     os.makedirs(config['logging']['pre_dir'], exist_ok=True)
 
     best_loss = float('inf')
+    best_auc = 0.5
+    best_meanl2 = float('inf')
     early_stop_count = 0
     best_checkpoint_path = None
     batch_size = config['train']['pre_batch_size']
@@ -305,12 +309,12 @@ def main():
 
                     gt_heatmap[y_grid, x_grid] = 1
                     # Gaussian blur
-                    gt_heatmap = TF.gaussian_blur(gt_heatmap.unsqueeze(0), kernel_size=[5, 5], sigma=[3.0]).squeeze(0)
+                    gt_heatmap = TF.gaussian_blur(gt_heatmap.unsqueeze(0), kernel_size=[7, 7], sigma=[1.0]).squeeze(0)
                 gt_gaze_xy.append(gt_heatmap)
 
             gt_heatmaps = torch.stack(gt_gaze_xy)
 
-            loss = pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * 10000
+            loss = pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
 
             # Backpropagation and optimization
             optimizer.zero_grad()
@@ -342,6 +346,19 @@ def main():
                 'loss': val_loss
             }, checkpoint_path)
             print(f"Checkpoint saved at {checkpoint_path}")
+
+            # Quantitative EVAL per 'save_every'
+            with torch.no_grad():
+                model.train(False)
+
+                auc, meanl2, minl2 = eval_pretrain_gazefollow(config, model, test_loader, device)
+
+                if auc > best_auc:
+                    print("AUC improved from {} to {}".format(best_auc, auc))
+                    best_auc = auc
+                if meanl2 < best_meanl2:
+                    print("Mean-L2 improved from {} to {}".format(best_meanl2, meanl2))
+                    best_meanl2 = meanl2
 
         # Save best model based on VAL_LOSS
         if val_loss < best_loss and epoch > 5:

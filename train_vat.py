@@ -258,6 +258,10 @@ def main():
     os.makedirs(config['logging']['log_dir'], exist_ok=True)
 
     best_loss = float('inf')
+    best_auc = 0.5
+    best_l2 = float('inf')
+    best_ap = 0.
+
     early_stop_count = 0
     best_checkpoint_path = None
     batch_size = config['train']['batch_size']
@@ -338,7 +342,6 @@ def main():
             inout_mask = torch.tensor(float(inout == 1), dtype=torch.float32)
             total_loss1 = total_pbce_loss * inout_mask.squeeze()
 
-
             total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1
         
             # Backpropagation and optimization
@@ -370,6 +373,22 @@ def main():
                 'loss': val_loss
             }, checkpoint_path)
             print(f"Checkpoint saved at {checkpoint_path}")
+
+            # Quantitative EVAL per 'save_every'
+            with torch.no_grad():
+                model.train(False)
+
+                auc, l2, ap = eval_metrics(config, model, test_loader, device)
+
+                if auc > best_auc:
+                    print("AUC improved from {} to {}".format(best_auc, auc))
+                    best_auc = auc
+                if l2 < best_l2:
+                    print("L2 improved from {} to {}".format(best_l2, l2))
+                    best_l2 = l2
+                if ap > best_ap:
+                    print("AP improved from {} to {}".format(best_ap, ap))
+                    best_ap = ap
 
         # Save best model based on VAL_LOSS
         if val_loss < best_loss:
