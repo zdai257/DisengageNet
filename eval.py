@@ -13,7 +13,7 @@ import yaml
 from sklearn.metrics import roc_auc_score, average_precision_score
 
 import matplotlib.pyplot as plt
-from network.utils import visualize_heatmap, visualize_heatmap2
+from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3
 
 
 # GazeFollow calculates AUC using original image size with GT (x,y) coordinates set to 1 and everything else as 0
@@ -223,37 +223,94 @@ def eval_pretrain_gazefollow(config, model, test_loader, device):
 
 if __name__=="__main__":
     split = 'test'
+    dataset_name = "gazefollow_extended"  #"GazeFollow"
+
     import json
-    frames = json.load(open(os.path.join("GazeFollow", "{}_preprocessed.json".format(split)), "rb"))
 
-    print("This GazeFollow split dataset size is: ", len(frames))
+    if dataset_name == "GazeFollow":
+        frames = json.load(open(os.path.join(dataset_name, "{}_preprocessed.json".format(split)), "rb"))
+        print("This GazeFollow split dataset size is: ", len(frames))
+        # this huggingFace GazeFollow dataset may be problematic
+        id = 876
 
-    id = 1000
+        frame_dict = frames[id]
 
-    frame_dict = frames[id]
+        img_source = join(dataset_name, frame_dict['path'])
+        image = Image.open(img_source).convert("RGB")
 
-    img_source = join("GazeFollow", frame_dict['path'])
-    image = Image.open(img_source).convert("RGB")
+        # convert a heatmap from label
+        gazex_pixel = frame_dict['gazex']
+        gazey_pixel = frame_dict['gazey']
+        gazex = frame_dict['gazex_norm']
+        gazey = frame_dict['gazey_norm']
 
-    # convert a heatmap from label
-    gazex_pixel = frame_dict['gazex']
-    gazey_pixel = frame_dict['gazey']
-    gazex = frame_dict['gazex_norm']
-    gazey = frame_dict['gazey_norm']
+        gt_heatmap = torch.zeros((64, 64))
+        x_grid = int(gazex[0] * 63)
+        y_grid = int(gazey[0] * 63)
 
-    gt_heatmap = torch.zeros((64, 64))
-    x_grid = int(gazex[0] * 63)
-    y_grid = int(gazey[0] * 63)
+        gt_heatmap[y_grid, x_grid] = 1
 
-    gt_heatmap[y_grid, x_grid] = 1
+        bbox = frame_dict["bbox_norm"]
 
-    bbox = frame_dict["bbox_norm"]
+        viz = visualize_heatmap2(image, gt_heatmap, bbox=bbox, xy=(gazex_pixel[0], gazey_pixel[0]), dilation_kernel=6,
+                                 blur_radius=1.3)
+        plt.imshow(viz)
+        plt.show()
 
-    viz = visualize_heatmap2(image, gt_heatmap, bbox=bbox, xy=(gazex_pixel[0], gazey_pixel[0]), dilation_kernel=6, blur_radius=1.3)
-    plt.imshow(viz)
-    plt.show()
+        saved_path = join("processed", "demo_" + img_source.split('/')[-1])
 
-    saved_path = join("processed", "demo_" + img_source.split('/')[-1])
+        if 0:  # if saving
+            viz.convert("RGB").save(saved_path)
 
-    if 0:  # if saving
-        viz.convert("RGB").save(saved_path)
+    elif dataset_name == "gazefollow_extended":
+        # Chong's extended dataset
+        id = 1000
+        frames = []
+        with open(join(dataset_name, "{}_annotations_release.txt".format(split)), "r") as f:
+            for line in f:
+                frame = {}
+                anno_lst = line.strip().split(',')
+                if split == 'train':
+                    frame['inout'] = float(anno_lst[14])
+                    if frame['inout'] == -1:
+                        continue
+                else:
+                    frame['inout'] = None
+                frame['path'] = anno_lst[0]
+                frame['gazex_norm'] = [float(anno_lst[8])]
+                frame['gazey_norm'] = [float(anno_lst[9])]
+                frame['bbox_pixel'] = [float(anno_lst[10]), float(anno_lst[11]), float(anno_lst[12]),
+                                       float(anno_lst[13])]
+                frames.append(frame)
+
+        print("This GazeFollow_extended split dataset size is: ", len(frames))
+        frame_dict = frames[id]
+        print(frame_dict)
+
+        img_source = join(dataset_name, frame_dict['path'])
+        image = Image.open(img_source).convert("RGB")
+        w, h = image.width, image.height
+        print(w, h)
+        # convert a heatmap from label
+        gazex_pixel = frame_dict['gazex_norm'][0] * w
+        gazey_pixel = frame_dict['gazey_norm'][0] * h
+        gazex = frame_dict['gazex_norm'][0]
+        gazey = frame_dict['gazey_norm'][0]
+
+        gt_heatmap = torch.zeros((64, 64))
+        x_grid = int(gazex * 63)
+        y_grid = int(gazey * 63)
+        gt_heatmap[y_grid, x_grid] = 1
+
+        bbox = [frame_dict['bbox_pixel'][0]/w, frame_dict['bbox_pixel'][1]/h, frame_dict['bbox_pixel'][2]/w, frame_dict['bbox_pixel'][3]/h]
+        print(bbox)
+
+        viz = visualize_heatmap2(image, gt_heatmap, bbox=bbox, xy=(gazex_pixel, gazey_pixel), dilation_kernel=6, blur_radius=1.3)
+        #viz = visualize_heatmap3(image, gt_heatmap, bbox=bbox, xy=(gazex_pixel, gazey_pixel), dilation_kernel=5, blur_radius=1.3, transparent_bg=True)
+        plt.imshow(viz)
+        plt.show()
+
+        saved_path = join("processed", "demo_" + img_source.split('/')[-1])
+
+        if 0:  # if saving
+            viz.convert("RGB").save(saved_path)
