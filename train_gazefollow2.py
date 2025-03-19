@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.optim import RMSprop, Adam, AdamW
 from torch.optim.lr_scheduler import StepLR
 from torchvision import transforms
-from torchvision.transforms import Compose, ToTensor
+from torchvision.transforms import Compose, ToTensor, ToPILImage
 import torchvision.transforms.functional as TF
 from PIL import Image
 import json
@@ -17,6 +17,8 @@ import yaml
 from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model
 from eval import eval_pretrain_gazefollow
+#from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3
+#import matplotlib.pyplot as plt
 
 LOSS_SCALAR = 10000
 
@@ -63,7 +65,7 @@ class GazeFollowExtended(torch.utils.data.Dataset):
 
                 if split == 'train':
                     frame['inout'] = float(anno_lst[14])
-                    if frame['inout'] == -1:
+                    if frame['inout'] != 1:
                         continue
                 else:
                     frame['inout'] = None
@@ -125,14 +127,17 @@ def evaluate(config, model, val_loader, device):
 
             pred_heatmap = preds['heatmap'][0]
 
-            gt_gaze_xy = []
-            for gtxs, gtys in zip(gazex, gazey):
+            if True:
+                gt_gaze_xy = []
+                gtxs = gazex
+                gtys = gazey
+                #print(gazex, gazey)
                 batch_size0 = len(gtxs)
                 # for GazeFollow, len should always be 1 (?!), so gtxs is no list ??
                 for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
                     gt_heatmap = torch.zeros((64, 64))
-                    x_grid = int(gtx * 63)
-                    y_grid = int(gty * 63)
+                    x_grid = int(gtx[0] * 63)
+                    y_grid = int(gty[0] * 63)
 
                     gt_heatmap[y_grid, x_grid] = 1
                     # Gaussian blur
@@ -300,20 +305,40 @@ def main():
             #                   'inout': list of head_count *tensor[Batch_size,] }
 
             pred_heatmap = preds['heatmap'][0]
-
-            gt_gaze_xy = []
-            for gtxs, gtys in zip(gazex, gazey):
+            
+            if True:
+                gt_gaze_xy = []
+                gtxs = gazex
+                gtys = gazey
+                #print(gazex, gazey)
                 batch_size0 = len(gtxs)
                 # for GazeFollow, len should always be 1 (?!), so gtxs is no list ??
                 for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
                     gt_heatmap = torch.zeros((64, 64))
-                    x_grid = int(gtx * 63)
-                    y_grid = int(gty * 63)
+                    x_grid = int(gtx[0] * 63)
+                    y_grid = int(gty[0] * 63)
 
                     gt_heatmap[y_grid, x_grid] = 1
                     # Gaussian blur
                     gt_heatmap = TF.gaussian_blur(gt_heatmap.unsqueeze(0), kernel_size=[9, 9], sigma=[1.5]).squeeze(0)
-                gt_gaze_xy.append(gt_heatmap)
+
+                    # DEBUG
+                    """
+                    id = i
+                    transform = ToPILImage()
+                    image = torch.clamp(images[i].detach().cpu(), 0, 1)
+                    image = transform(image)
+                    
+                    print(gazex[id][0], gazey[id][0])
+                    torch.set_printoptions(threshold=10_000)
+                    #print(gt_heatmap)
+                    viz = visualize_heatmap2(image, gt_heatmap, bbox=bboxes[id], xy=(gazex[id][0]*448, gazey[id][0]*448), dilation_kernel=6,
+                                 blur_radius=1.3)  #, transparent_bg=None)
+                    plt.imshow(viz)
+                    plt.show()
+                    """
+                    
+                    gt_gaze_xy.append(gt_heatmap)
 
             gt_heatmaps = torch.stack(gt_gaze_xy)
 
