@@ -136,7 +136,7 @@ def evaluate(config, model, val_loader, device):
 
                     gt_heatmap[y_grid, x_grid] = 1
                     # Gaussian blur
-                    gt_heatmap = TF.gaussian_blur(gt_heatmap.unsqueeze(0), kernel_size=[7, 7], sigma=[1.0]).squeeze(0)
+                    gt_heatmap = TF.gaussian_blur(gt_heatmap.unsqueeze(0), kernel_size=[9, 9], sigma=[1.5]).squeeze(0)
                 gt_gaze_xy.append(gt_heatmap)
 
             gt_heatmaps = torch.stack(gt_gaze_xy)
@@ -234,7 +234,7 @@ def main():
     # transform_list.append(transforms.RandomHorizontalFlip(0.5))
     transform_list.append(transforms.ToTensor())
     transform_list.append(transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
-    transform_list.append(transforms.Resize(input_resolution))
+    transform_list.append(transforms.Resize((input_resolution, input_resolution)))
     my_transform = transforms.Compose(transform_list)
 
     my_transform = gazelle_transform
@@ -270,6 +270,9 @@ def main():
 
     ### Gaussian-Blurred Ground Truth + MSELoss
     pbce_loss = torch.nn.MSELoss(reduction='mean')  # Mean Squared Error Loss
+    # another way of MSELoss
+    #pbce_loss = torch.nn.MSELoss(reduce=False)
+
     # Pixel wise binary CrossEntropy loss
     #pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
 
@@ -309,12 +312,15 @@ def main():
 
                     gt_heatmap[y_grid, x_grid] = 1
                     # Gaussian blur
-                    gt_heatmap = TF.gaussian_blur(gt_heatmap.unsqueeze(0), kernel_size=[7, 7], sigma=[1.0]).squeeze(0)
+                    gt_heatmap = TF.gaussian_blur(gt_heatmap.unsqueeze(0), kernel_size=[9, 9], sigma=[1.5]).squeeze(0)
                 gt_gaze_xy.append(gt_heatmap)
 
             gt_heatmaps = torch.stack(gt_gaze_xy)
 
             loss = pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
+            # another way to compute MSELoss
+            #loss = pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
+            #loss = loss.mean([1, 2])
 
             # Backpropagation and optimization
             optimizer.zero_grad()
