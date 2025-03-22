@@ -76,6 +76,7 @@ class GazeFollowExtended(torch.utils.data.Dataset):
                 frame['bbox_pixel'] = [float(anno_lst[10]), float(anno_lst[11]), float(anno_lst[12]), float(anno_lst[13])]
 
                 self.frames.append(frame)
+            print("Number of valid samples ", len(self.frames))
 
         self.root_path = root_path
         self.transform = img_transform
@@ -94,15 +95,15 @@ class GazeFollowExtended(torch.utils.data.Dataset):
 
         # involve 'inout' in training??
         inout = frame['inout']
-        return image, bbox, gazex, gazey, h, w
+        return image, bbox, gazex, gazey, inout, h, w
 
     def __len__(self):
         return len(self.frames)
 
 
 def collate(batch):
-    images, bbox, gazex, gazey, height, width = zip(*batch)
-    return torch.stack(images), list(bbox), list(gazex), list(gazey), list(height), list(width)
+    images, bbox, gazex, gazey, inout, height, width = zip(*batch)
+    return torch.stack(images), list(bbox), list(gazex), list(gazey), list(inout), list(height), list(width)
 
 
 @torch.no_grad()
@@ -111,14 +112,15 @@ def evaluate(config, model, val_loader, device):
     batch_size = config['eval']['batch_size']
 
     # MSEloss
-    val_pbce_loss = torch.nn.MSELoss(reduction="mean")
+    #val_pbce_loss = torch.nn.MSELoss(reduction="mean")
+    val_pbce_loss = torch.nn.MSELoss(reduce=False)
     # pixel-wise BCE loss
     #val_pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
     validation_loss = 0.0
     val_total = len(val_loader)
 
     with tqdm(total=val_total) as pbar:
-        for images, bboxes, gazex, gazey, h, w in val_loader:
+        for images, bboxes, gazex, gazey, inouts, h, w in val_loader:
 
             preds = model({"images": images.to(device), "bboxes": [bboxes]})
 
@@ -142,11 +144,16 @@ def evaluate(config, model, val_loader, device):
                     gt_heatmap[y_grid, x_grid] = 1
                     # Gaussian blur
                     gt_heatmap = TF.gaussian_blur(gt_heatmap.unsqueeze(0), kernel_size=[9, 9], sigma=[1.5]).squeeze(0)
-                gt_gaze_xy.append(gt_heatmap)
+                    gt_gaze_xy.append(gt_heatmap)
 
             gt_heatmaps = torch.stack(gt_gaze_xy)
 
             loss = val_pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
+            loss = loss.mean([1, 2])
+
+            gaze_in = inouts.to(device).to(torch.float)
+            loss = torch.mul(loss, gaze_in)
+            loss = torch.sum(loss) / torch.sum(gaze_in)
             validation_loss += loss.item()
 
             pbar.update(1)
@@ -251,6 +258,7 @@ def main():
     test_dataset = GazeFollowExtended(root_path=config['data']['pre_test_path'],
                               img_transform=my_transform,
                               split='test')
+    #print(train_dataset.__len__(), test_dataset.__len__())
     #train_dataset = GazeFollowExtended('gazefollow_extended', img_transform=my_transform, split='train')
     #test_dataset = GazeFollowExtended('gazefollow_extended', img_transform=my_transform, split='test')
 
@@ -260,7 +268,8 @@ def main():
         collate_fn=collate,
         shuffle=True,
         num_workers=config['hardware']['num_workers'],
-        pin_memory=config['hardware']['pin_memory']
+        pin_memory=config['hardware']['pin_memory'],
+        drop_last=True
     )
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
@@ -268,13 +277,15 @@ def main():
         collate_fn=collate,
         # shuffle=True,
         num_workers=config['hardware']['num_workers'],
-        pin_memory=config['hardware']['pin_memory']
+        pin_memory=config['hardware']['pin_memory'],
+        drop_last=True
     )
 
     # train_length = train_dataset.__len__()
 
     ### Gaussian-Blurred Ground Truth + MSELoss
-    pbce_loss = torch.nn.MSELoss(reduction='mean')  # Mean Squared Error Loss
+    #pbce_loss = torch.nn.MSELoss(reduction='mean')  # Mean Squared Error Loss
+    pbce_loss = torch.nn.MSELoss(reduce=False)
     # another way of MSELoss
     #pbce_loss = torch.nn.MSELoss(reduce=False)
 
@@ -296,14 +307,13 @@ def main():
         model.train(True)
         epoch_loss = 0.
 
-        for batch, (images, bboxes, gazex, gazey, h, w) in tqdm(enumerate(train_loader), total=len(train_loader)):
+        for batch, (images, bboxes, gazex, gazey, inouts, h, w) in tqdm(enumerate(train_loader), total=len(train_loader)):
 
             # forward pass
             preds = model({"images": images.to(device), "bboxes": [bboxes]})
 
             # preds = a dict of{'heatmap': list of head_count *tensor[Batch_size, 64, 64],
             #                   'inout': list of head_count *tensor[Batch_size,] }
-
             pred_heatmap = preds['heatmap'][0]
             
             if True:
@@ -343,9 +353,11 @@ def main():
             gt_heatmaps = torch.stack(gt_gaze_xy)
 
             loss = pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
-            # another way to compute MSELoss
-            #loss = pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
-            #loss = loss.mean([1, 2])
+            loss = loss.mean([1, 2])
+
+            gaze_in = inouts.to(device).to(torch.float)
+            loss = torch.mul(loss, gaze_in)
+            loss = torch.sum(loss) / torch.sum(gaze_in)
 
             # Backpropagation and optimization
             optimizer.zero_grad()
