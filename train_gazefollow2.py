@@ -68,7 +68,7 @@ class GazeFollowExtended(torch.utils.data.Dataset):
                     if frame['inout'] != 1:
                         continue
                 else:
-                    frame['inout'] = None
+                    frame['inout'] = 1
 
                 frame['path'] = anno_lst[0]
                 frame['gazex_norm'] = [float(anno_lst[8])]
@@ -151,7 +151,7 @@ def evaluate(config, model, val_loader, device):
             loss = val_pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
             loss = loss.mean([1, 2])
 
-            gaze_in = inouts.to(device).to(torch.float)
+            gaze_in = torch.FloatTensor(inouts).to(device)
             loss = torch.mul(loss, gaze_in)
             loss = torch.sum(loss) / torch.sum(gaze_in)
             validation_loss += loss.item()
@@ -355,7 +355,7 @@ def main():
             loss = pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
             loss = loss.mean([1, 2])
 
-            gaze_in = inouts.to(device).to(torch.float)
+            gaze_in = torch.FloatTensor(inouts).to(device)
             loss = torch.mul(loss, gaze_in)
             loss = torch.sum(loss) / torch.sum(gaze_in)
 

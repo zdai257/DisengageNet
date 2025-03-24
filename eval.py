@@ -195,7 +195,7 @@ def eval_pretrain_gazefollow(config, model, test_loader, device):
     min_l2s = []
     avg_l2s = []
 
-    for _, (images, bboxes, gazex, gazey, height, width) in tqdm(enumerate(test_loader), desc="Evaluating",
+    for _, (images, bboxes, gazex, gazey, inouts, height, width) in tqdm(enumerate(test_loader), desc="Evaluating",
                                                                  total=len(test_loader)):
         preds = model.forward({"images": images.to(device), "bboxes": [bboxes]})
 
@@ -272,7 +272,7 @@ if __name__=="__main__":
                 anno_lst = line.strip().split(',')
                 if split == 'train':
                     frame['inout'] = float(anno_lst[14])
-                    if frame['inout'] == -1:
+                    if frame['inout'] != 1:
                         continue
                 else:
                     frame['inout'] = None
