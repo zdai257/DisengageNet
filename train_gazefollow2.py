@@ -106,6 +106,25 @@ def collate(batch):
     return torch.stack(images), list(bbox), list(gazex), list(gazey), list(inout), list(height), list(width)
 
 
+def apply_dilation_blur(heatmap, dilation_kernel=3, blur_radius=1.):
+    """
+    Args:
+        heatmap (Tensor): Shape (64, 64), predicted heatmaps.
+        dilation_kernel (int): Kernel size for dilation (must be odd).
+        blur_radius (float): Standard deviation for Gaussian blur.
+    Returns:
+        Tensor: Processed heatmap of shape (64, 64).
+    """
+    H, W = heatmap.shape
+    heatmap = heatmap.unsqueeze(0)  # Convert to (1, H, W) for processing
+    # Dilation using max pooling
+    heatmap_dilated = F.max_pool2d(heatmap, kernel_size=dilation_kernel, stride=1, padding=dilation_kernel//2)
+    # Gaussian blur
+    kernel_size = int(6 * blur_radius) | 1  # Ensure it's an odd number
+    heatmap_blurred = TF.gaussian_blur(heatmap_dilated, kernel_size=[kernel_size,kernel_size], sigma=[blur_radius])
+    return heatmap_blurred.squeeze(0)  # Convert back to (64, 64)
+
+
 @torch.no_grad()
 def evaluate(config, model, val_loader, device):
     model.eval()
@@ -143,7 +162,7 @@ def evaluate(config, model, val_loader, device):
 
                     gt_heatmap[y_grid, x_grid] = 1
                     # Gaussian blur
-                    gt_heatmap = TF.gaussian_blur(gt_heatmap.unsqueeze(0), kernel_size=[9, 9], sigma=[1.5]).squeeze(0)
+                    gt_heatmap = apply_dilation_blur(gt_heatmap)
                     gt_gaze_xy.append(gt_heatmap)
 
             gt_heatmaps = torch.stack(gt_gaze_xy)
@@ -330,7 +349,7 @@ def main():
 
                     gt_heatmap[y_grid, x_grid] = 1
                     # Gaussian blur
-                    gt_heatmap = TF.gaussian_blur(gt_heatmap.unsqueeze(0), kernel_size=[9, 9], sigma=[1.5]).squeeze(0)
+                    gt_heatmap = apply_dilation_blur(gt_heatmap)
 
                     # DEBUG
                     """
