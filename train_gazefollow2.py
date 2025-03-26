@@ -17,8 +17,8 @@ import yaml
 from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model
 from eval import eval_pretrain_gazefollow
-#from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3
-#import matplotlib.pyplot as plt
+from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3
+import matplotlib.pyplot as plt
 
 LOSS_SCALAR = 1
 
@@ -125,6 +125,33 @@ def apply_dilation_blur(heatmap, dilation_kernel=3, blur_radius=1.):
     return heatmap_blurred.squeeze(0)  # Convert back to (64, 64)
 
 
+def apply_dilation_blur2(heatmap, dilation_kernel=3, blur_radius=1.0, peak_val=1.0, min_val=0.0):
+    """
+    Applies dilation followed by Gaussian blur and rescales values to maintain high confidence near the peak.
+
+    Args:
+        heatmap (Tensor): Shape (64, 64), a single ground-truth heatmap.
+        dilation_kernel (int): Kernel size for dilation (must be odd).
+        blur_radius (float): Standard deviation for Gaussian blur.
+        peak_val (float): Maximum value for the peak (default=1.0).
+        min_val (float): Minimum value in the blurred area (default=0.6).
+    Returns:
+        Tensor: Processed heatmap of shape (64, 64) with controlled confidence levels.
+    """
+    H, W = heatmap.shape
+    heatmap = heatmap.unsqueeze(0)  # Convert to (1, H, W) for processing
+    # Dilation using max pooling
+    heatmap_dilated = F.max_pool2d(heatmap, kernel_size=dilation_kernel, stride=1, padding=dilation_kernel // 2)
+    # Gaussian blur
+    kernel_size = int(6 * blur_radius) | 1  # Ensure kernel size is an odd number
+    heatmap_blurred = TF.gaussian_blur(heatmap_dilated, kernel_size=[kernel_size, kernel_size], sigma=[blur_radius])
+    # Rescale: Normalize between [min_val, peak_val]
+    heatmap_blurred = heatmap_blurred - heatmap_blurred.min()  # Shift minimum to 0
+    heatmap_blurred = heatmap_blurred / heatmap_blurred.max()  # Normalize to [0,1]
+    heatmap_blurred = heatmap_blurred * (peak_val - min_val) + min_val  # Scale to [min_val, peak_val]
+    return heatmap_blurred.squeeze(0)  # Convert back to (64, 64)
+
+
 @torch.no_grad()
 def evaluate(config, model, val_loader, device):
     model.eval()
@@ -163,7 +190,7 @@ def evaluate(config, model, val_loader, device):
 
                     gt_heatmap[y_grid, x_grid] = 1
                     # Gaussian blur
-                    gt_heatmap = apply_dilation_blur(gt_heatmap)
+                    gt_heatmap = apply_dilation_blur2(gt_heatmap)
                     gt_gaze_xy.append(gt_heatmap)
 
             gt_heatmaps = torch.stack(gt_gaze_xy)
@@ -351,7 +378,7 @@ def main():
 
                     gt_heatmap[y_grid, x_grid] = 1
                     # Gaussian blur
-                    gt_heatmap = apply_dilation_blur(gt_heatmap)
+                    gt_heatmap = apply_dilation_blur2(gt_heatmap)
 
                     # DEBUG
                     """
@@ -362,7 +389,7 @@ def main():
                     
                     print(gazex[id][0], gazey[id][0])
                     torch.set_printoptions(threshold=10_000)
-                    #print(gt_heatmap)
+                    print(gt_heatmap)
                     viz = visualize_heatmap2(image, gt_heatmap, bbox=bboxes[id], xy=(gazex[id][0]*448, gazey[id][0]*448), dilation_kernel=6,
                                  blur_radius=1.3)  #, transparent_bg=None)
                     plt.imshow(viz)

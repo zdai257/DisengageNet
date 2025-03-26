@@ -43,7 +43,7 @@ train:
   gradient_clipping: 5.0            # Gradient clipping threshold
   # GazeFollow pretrain params
   pre_lr: 0.01
-  pre_batch_size: 48   # 60
+  pre_batch_size: 60   # 60
   pre_epochs: 12   # 15
   pre_optimizer: "Adam"
   pre_lr_scheduler:
@@ -54,7 +54,7 @@ train:
 
 eval:
   checkpoint: "gazelle_large_vitl14_inout.pt"  # Path to the checkpoint for evaluation
-  batch_size: 48                    # Batch size for evaluation
+  batch_size: 60                    # Batch size for evaluation
   metrics:                          # Evaluation metrics
     - accuracy
     - precision
@@ -65,10 +65,10 @@ inference:
 
 logging:
   log_dir: "results/final40/"   # "results/checkpoints20/"
-  pre_dir: "results/prechecks50_adam_bs48_bce_1e2/"
+  pre_dir: "results/prechecks70_adam_bs60_bce_1e2/"
   save_every: 5
 
 hardware:
-  device: "cuda:2"                    # Device to use (cuda, cpu)
+  device: "cuda:3"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading
