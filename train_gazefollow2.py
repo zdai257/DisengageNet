@@ -20,7 +20,7 @@ from eval import eval_pretrain_gazefollow
 #from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3
 #import matplotlib.pyplot as plt
 
-LOSS_SCALAR = 10000
+LOSS_SCALAR = 1
 
 
 class GazeFollow(torch.utils.data.Dataset):
@@ -132,8 +132,9 @@ def evaluate(config, model, val_loader, device):
 
     # MSEloss
     #val_pbce_loss = torch.nn.MSELoss(reduction="mean")
-    val_pbce_loss = torch.nn.MSELoss(reduce=False)
+    #val_pbce_loss = torch.nn.MSELoss(reduce=False)
     # pixel-wise BCE loss
+    val_pbce_loss = torch.nn.BCELoss()
     #val_pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
     validation_loss = 0.0
     val_total = len(val_loader)
@@ -168,11 +169,11 @@ def evaluate(config, model, val_loader, device):
             gt_heatmaps = torch.stack(gt_gaze_xy)
 
             loss = val_pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
-            loss = loss.mean([1, 2])
+            #loss = loss.mean([1, 2])
 
-            gaze_in = torch.FloatTensor(inouts).to(device)
-            loss = torch.mul(loss, gaze_in)
-            loss = torch.sum(loss) / torch.sum(gaze_in)
+            #gaze_in = torch.FloatTensor(inouts).to(device)
+            #loss = torch.mul(loss, gaze_in)
+            #loss = torch.sum(loss) / torch.sum(gaze_in)
             validation_loss += loss.item()
 
             pbar.update(1)
@@ -304,11 +305,12 @@ def main():
 
     ### Gaussian-Blurred Ground Truth + MSELoss
     #pbce_loss = torch.nn.MSELoss(reduction='mean')  # Mean Squared Error Loss
-    pbce_loss = torch.nn.MSELoss(reduce=False)
+    #pbce_loss = torch.nn.MSELoss(reduce=False)
     # another way of MSELoss
     #pbce_loss = torch.nn.MSELoss(reduce=False)
 
     # Pixel wise binary CrossEntropy loss
+    pbce_loss = torch.nn.BCELoss()
     #pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
 
     # save dir for checkpoints
@@ -372,11 +374,11 @@ def main():
             gt_heatmaps = torch.stack(gt_gaze_xy)
 
             loss = pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
-            loss = loss.mean([1, 2])
+            #loss = loss.mean([1, 2])
 
-            gaze_in = torch.FloatTensor(inouts).to(device)
-            loss = torch.mul(loss, gaze_in)
-            loss = torch.sum(loss) / torch.sum(gaze_in)
+            #gaze_in = torch.FloatTensor(inouts).to(device)
+            #loss = torch.mul(loss, gaze_in)
+            #loss = torch.sum(loss) / torch.sum(gaze_in)
 
             # Backpropagation and optimization
             optimizer.zero_grad()
