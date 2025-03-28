@@ -5,7 +5,7 @@ from torch.optim import RMSprop, Adam, AdamW
 from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR, LambdaLR
 from torchvision import transforms
 import torchvision.transforms as T
-from torchvision.transforms import Compose, ToTensor
+from torchvision.transforms import Compose, ToTensor, ToPILImage
 import torchvision.transforms.functional as TF
 from PIL import Image
 import json
@@ -17,6 +17,8 @@ import yaml
 from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model
 from eval import eval_metrics, average_precision_score, vat_auc, vat_l2
+from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3
+#import matplotlib.pyplot as plt
 # VAT native data_loader
 #from dataset_builder import VideoAttTarget_video
 
@@ -373,6 +375,22 @@ def main():
                     # add label gaussian blur
                     #a_heatmap = TF.gaussian_blur(a_heatmap.unsqueeze(0), kernel_size=[5, 5], sigma=[3.0]).squeeze(0)
                     a_heatmap = apply_dilation_blur2(a_heatmap)
+                    # DEBUG
+                    """
+                    id = i
+                    transform = ToPILImage()
+                    image = torch.clamp(images[i].detach().cpu(), 0, 1)
+                    image = transform(image)
+
+                    print(gazex[id][0], gazey[id][0])
+                    torch.set_printoptions(threshold=10_000)
+                    print(gt_heatmap)
+                    viz = visualize_heatmap2(image, gt_heatmap, bbox=bboxes[id], xy=(gazex[id][0]*448, gazey[id][0]*448), dilation_kernel=6,
+                                 blur_radius=1.)  #, transparent_bg=None)
+                    plt.imshow(viz)
+                    plt.show()
+                    """
+
                     gt_heatmap.append(a_heatmap)
                     gt_io.append(a_io)
 
