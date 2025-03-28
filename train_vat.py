@@ -1,5 +1,6 @@
 import argparse
 import torch
+import torch.nn.functional as F
 from torch.optim import RMSprop, Adam, AdamW
 from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR, LambdaLR
 from torchvision import transforms
@@ -15,9 +16,11 @@ import yaml
 
 from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model
-from eval import eval_metrics
+from eval import eval_metrics, average_precision_score, vat_auc, vat_l2
 # VAT native data_loader
 #from dataset_builder import VideoAttTarget_video
+
+LOSS_SCALAR = 1
 
 
 class VideoAttentionTarget(torch.utils.data.Dataset):
@@ -51,15 +54,48 @@ def collate(batch):
     return torch.stack(images), list(bboxes), list(gazex), list(gazey), list(inout)
 
 
+def apply_dilation_blur2(heatmap, dilation_kernel=3, blur_radius=1.0, peak_val=1.0, min_val=0.0):
+    """
+    Applies dilation followed by Gaussian blur and rescales values to maintain high confidence near the peak.
+
+    Args:
+        heatmap (Tensor): Shape (64, 64), a single ground-truth heatmap.
+        dilation_kernel (int): Kernel size for dilation (must be odd).
+        blur_radius (float): Standard deviation for Gaussian blur.
+        peak_val (float): Maximum value for the peak (default=1.0).
+        min_val (float): Minimum value in the blurred area (default=0.0).
+    Returns:
+        Tensor: Processed heatmap of shape (64, 64) with controlled confidence levels.
+    """
+    H, W = heatmap.shape
+    heatmap = heatmap.unsqueeze(0)  # Convert to (1, H, W) for processing
+    # Dilation using max pooling
+    heatmap_dilated = F.max_pool2d(heatmap, kernel_size=dilation_kernel, stride=1, padding=dilation_kernel // 2)
+    # Gaussian blur
+    kernel_size = int(6 * blur_radius) | 1  # Ensure kernel size is an odd number
+    heatmap_blurred = TF.gaussian_blur(heatmap_dilated, kernel_size=[kernel_size, kernel_size], sigma=[blur_radius])
+    # Rescale: Normalize between [min_val, peak_val]
+    heatmap_blurred = heatmap_blurred - heatmap_blurred.min()  # Shift minimum to 0
+    heatmap_blurred = heatmap_blurred / heatmap_blurred.max()  # Normalize to [0,1]
+    heatmap_blurred = heatmap_blurred * (peak_val - min_val) + min_val  # Scale to [min_val, peak_val]
+    return heatmap_blurred.squeeze(0)  # Convert back to (64, 64)
+
+
 @torch.no_grad()
 def evaluate(config, model, val_loader, device):
     model.eval()
-
     bce_loss = torch.nn.BCELoss(reduction='mean')
-    pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
+    # MSEloss
+    #pbce_loss = torch.nn.MSELoss(reduce=False)
+    # BCELoss
+    pbce_loss = torch.nn.BCELoss(reduction="mean")
     validation_loss = 0.0
     val_total = len(val_loader)
 
+    aucs = []
+    l2s = []
+    inout_preds = []
+    inout_gts = []
     with tqdm(total=val_total) as pbar:
         for images, bboxes, gazex, gazey, inout in val_loader:
 
@@ -90,7 +126,8 @@ def evaluate(config, model, val_loader, device):
                     y_grid = int(gty[0] * 63)
 
                     a_heatmap[y_grid, x_grid] = 1
-                    a_heatmap = TF.gaussian_blur(a_heatmap.unsqueeze(0), kernel_size=[5, 5], sigma=[3.0]).squeeze(0)
+                    #a_heatmap = TF.gaussian_blur(a_heatmap.unsqueeze(0), kernel_size=[5, 5], sigma=[3.0]).squeeze(0)
+                    a_heatmap = apply_dilation_blur2(a_heatmap)
                     gt_heatmap.append(a_heatmap)
                     gt_io.append(a_io)
 
@@ -101,7 +138,7 @@ def evaluate(config, model, val_loader, device):
             gt_inouts = torch.cat(gt_inouts)
 
             # regress loss
-            total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device))
+            total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
 
             # classification loss
             total_loss0 = bce_loss(pred_inouts, gt_inouts.to(device))
@@ -115,6 +152,21 @@ def evaluate(config, model, val_loader, device):
 
             pbar.update(1)
 
+            # Quantitative eval each instance (head)
+            for i in range(images.shape[0]):  # per image
+                for j in range(len(bboxes[i])):  # per head
+                    if inout[i][j] == 1:  # in frame
+                        auc = vat_auc(preds['heatmap'][i][j], gazex[i][j][0], gazey[i][j][0])
+                        l2 = vat_l2(preds['heatmap'][i][j], gazex[i][j][0], gazey[i][j][0])
+                        aucs.append(auc)
+                        l2s.append(l2)
+                    inout_preds.append(preds['inout'][i][j].item())
+                    inout_gts.append(inout[i][j])
+
+    AUC = np.array(aucs).mean()
+    L2_mean = np.array(l2s).mean()
+    AP = average_precision_score(inout_gts, inout_preds)
+    print("Eval -- AUC: {}; Mean L2: {}; Inout AP: {}".format(AUC, L2_mean, AP))
     return float(validation_loss / val_total)
 
 
@@ -131,7 +183,7 @@ def main():
     num_epochs = config['train']['epochs']
 
     # select Network
-    model, gazelle_transform = get_gt360_model(config)
+    model, gazelle_transform = get_gazelle_model(config)
     # load a pre-trained model
     #model.load_state_dict(torch.load(config['model']['pretrained_path'], map_location=device, weights_only=True))
     # load from public pre-trained
@@ -150,7 +202,7 @@ def main():
 
     # Randomly initialize learnable parameters
     for name, param in model.named_parameters():
-        break
+        #break
         if param.requires_grad:  # Only initialize unfrozen parameters
             if 'ms_fusion' in name or 'transformer' in name:
                 if param.dim() > 1:  # Weights
@@ -162,8 +214,6 @@ def main():
     for name, param in model.named_parameters():
         #print(f"{name}: requires_grad={param.requires_grad}")
         pass
-
-    #exit()
 
     model.to(device)
 
@@ -179,7 +229,7 @@ def main():
             #    param_dicts.append({'params': p, 'lr': config['train']['lr']})
             #if "ms_fusion" not in n and "inout" in n:
             #    param_dicts.append({'params': p, 'lr': config['train']['inout_lr']})
-            if 'ms_fusion' in name or 'transformer' in name:
+            if 'ms_fusion' in n or 'transformer' in n:
                 param_dicts.append({'params': p, 'lr': config['train']['fuse_lr']})
             else:
                 param_dicts.append({'params': p, 'lr': config['train']['lr']})
@@ -196,7 +246,7 @@ def main():
     gamma = config['train']['lr_scheduler']['gamma']  # Factor by which the learning rate will be reduced
     if config['train']['lr_scheduler']['type'] == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
-                                                               T_max=100)
+                                                               T_max=10)
                                                                #eta_min=config['train']['lr_scheduler']['min_lr'])
     elif config['train']['lr_scheduler']['type'] == "warmup":
         def warmup_lambda(epoch):
@@ -227,7 +277,6 @@ def main():
     train_dataset = VideoAttentionTarget(path=config['data']['train_path'],
                                          img_transform=my_transform,
                                          split='train')
-
     test_dataset = VideoAttentionTarget(path=config['data']['test_path'],
                                         img_transform=my_transform,
                                         split='test')
@@ -248,11 +297,13 @@ def main():
         num_workers=config['hardware']['num_workers'],
         pin_memory=config['hardware']['pin_memory']
     )
-    # val_loader?
 
-    bce_loss = torch.nn.BCELoss(reduction='mean')  # Binary Cross-Entropy Loss
+    # BCELoss
+    bce_loss = torch.nn.BCELoss(reduction='mean')
+    # MSEloss
+    #pbce_loss = torch.nn.MSELoss(reduce=False)
     # Pixel wise binary CrossEntropy loss
-    pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
+    pbce_loss = torch.nn.BCELoss(reduction="mean")
 
     # save dir for checkpoints
     os.makedirs(config['logging']['log_dir'], exist_ok=True)
@@ -320,7 +371,8 @@ def main():
 
                     a_heatmap[y_grid, x_grid] = 1
                     # add label gaussian blur
-                    a_heatmap = TF.gaussian_blur(a_heatmap.unsqueeze(0), kernel_size=[5, 5], sigma=[3.0]).squeeze(0)
+                    #a_heatmap = TF.gaussian_blur(a_heatmap.unsqueeze(0), kernel_size=[5, 5], sigma=[3.0]).squeeze(0)
+                    a_heatmap = apply_dilation_blur2(a_heatmap)
                     gt_heatmap.append(a_heatmap)
                     gt_io.append(a_io)
 
@@ -333,7 +385,7 @@ def main():
             #print(pred_heatmaps.shape, gt_heatmaps.shape)
             #print(pred_inouts.shape, gt_inouts.shape)
             # regress loss
-            total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device))
+            total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
 
             # classification loss
             total_loss0 = bce_loss(pred_inouts, gt_inouts.to(device))
@@ -374,24 +426,8 @@ def main():
             }, checkpoint_path)
             print(f"Checkpoint saved at {checkpoint_path}")
 
-            # Quantitative EVAL per 'save_every'
-            with torch.no_grad():
-                model.train(False)
-
-                auc, l2, ap = eval_metrics(config, model, test_loader, device)
-
-                if auc > best_auc:
-                    print("AUC improved from {} to {}".format(best_auc, auc))
-                    best_auc = auc
-                if l2 < best_l2:
-                    print("L2 improved from {} to {}".format(best_l2, l2))
-                    best_l2 = l2
-                if ap > best_ap:
-                    print("AP improved from {} to {}".format(best_ap, ap))
-                    best_ap = ap
-
         # Save best model based on VAL_LOSS
-        if val_loss < best_loss:
+        if val_loss < best_loss and epoch > 5:
             best_loss = val_loss
             checkpoint_path = os.path.join(config['logging']['log_dir'], f"best_epoch_{epoch + 1}.pt")
             best_checkpoint_path = checkpoint_path
