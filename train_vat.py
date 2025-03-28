@@ -359,13 +359,13 @@ def main():
 
             gt_heatmaps = []
             gt_inouts = []
-            for gtxs, gtys, ios in zip(gazex, gazey, inout):
+            for j, (bbxs, gtxs, gtys, ios) in enumerate(zip(bboxes, gazex, gazey, inout)):
                 heads = len(gtxs)
                 # for VAT, gazex/y is a list of BatchSize * [Heads * [norm_val] ]
                 gt_heatmap = []
                 gt_io = []
                 # loop through No. of heads
-                for i, (gtx, gty, io) in enumerate(zip(gtxs, gtys, ios)):
+                for i, (bbx, gtx, gty, io) in enumerate(zip(bbxs, gtxs, gtys, ios)):
                     a_heatmap = torch.zeros((64, 64))
                     a_io = torch.tensor([io], dtype=torch.float32)
                     x_grid = int(gtx[0] * 63)
@@ -379,13 +379,14 @@ def main():
                     """
                     id = i
                     transform = ToPILImage()
-                    image = torch.clamp(images[i].detach().cpu(), 0, 1)
+                    image = torch.clamp(images[j].detach().cpu(), 0, 1)
                     image = transform(image)
 
-                    print(gazex[id][0], gazey[id][0])
+                    print(gtx)
                     torch.set_printoptions(threshold=10_000)
-                    print(gt_heatmap)
-                    viz = visualize_heatmap2(image, gt_heatmap, bbox=bboxes[id], xy=(gazex[id][0]*448, gazey[id][0]*448), dilation_kernel=6,
+                    #print(a_heatmap)
+                    print(bbx)
+                    viz = visualize_heatmap2(image, a_heatmap, bbox=bbx, xy=(gtx[0]*448, gty[0]*448), dilation_kernel=6,
                                  blur_radius=1.)  #, transparent_bg=None)
                     plt.imshow(viz)
                     plt.show()
