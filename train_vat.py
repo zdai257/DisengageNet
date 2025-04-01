@@ -56,7 +56,7 @@ def collate(batch):
     return torch.stack(images), list(bboxes), list(gazex), list(gazey), list(inout)
 
 
-def apply_dilation_blur2(heatmap, dilation_kernel=3, blur_radius=1.0, peak_val=1.0, min_val=0.0):
+def apply_dilation_blur2(heatmap, dilation_kernel=5, blur_radius=0.8, peak_val=1.0, min_val=0.0):
     """
     Applies dilation followed by Gaussian blur and rescales values to maintain high confidence near the peak.
 
@@ -87,10 +87,11 @@ def apply_dilation_blur2(heatmap, dilation_kernel=3, blur_radius=1.0, peak_val=1
 def evaluate(config, model, val_loader, device):
     model.eval()
     bce_loss = torch.nn.BCELoss(reduction='mean')
+
     # MSEloss
-    #pbce_loss = torch.nn.MSELoss(reduce=False)
+    pbce_loss = torch.nn.MSELoss(reduce=False)
     # BCELoss
-    pbce_loss = torch.nn.BCELoss(reduction="mean")
+    #pbce_loss = torch.nn.BCELoss(reduction="mean")
     validation_loss = 0.0
     val_total = len(val_loader)
 
@@ -141,6 +142,7 @@ def evaluate(config, model, val_loader, device):
 
             # regress loss
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
+            total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
 
             # classification loss
             total_loss0 = bce_loss(pred_inouts, gt_inouts.to(device))
@@ -300,12 +302,13 @@ def main():
         pin_memory=config['hardware']['pin_memory']
     )
 
-    # BCELoss
+    # Inout classficiation loss
     bce_loss = torch.nn.BCELoss(reduction='mean')
+
     # MSEloss
-    #pbce_loss = torch.nn.MSELoss(reduce=False)
+    pbce_loss = torch.nn.MSELoss(reduce=False)
     # Pixel wise binary CrossEntropy loss
-    pbce_loss = torch.nn.BCELoss(reduction="mean")
+    #pbce_loss = torch.nn.BCELoss(reduction="mean")
 
     # save dir for checkpoints
     os.makedirs(config['logging']['log_dir'], exist_ok=True)
@@ -405,6 +408,7 @@ def main():
             #print(pred_inouts.shape, gt_inouts.shape)
             # regress loss
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
+            total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
 
             # classification loss
             total_loss0 = bce_loss(pred_inouts, gt_inouts.to(device))
