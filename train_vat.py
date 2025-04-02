@@ -22,7 +22,7 @@ from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatm
 # VAT native data_loader
 #from dataset_builder import VideoAttTarget_video
 
-LOSS_SCALAR = 1
+LOSS_SCALAR = 100
 
 
 class VideoAttentionTarget(torch.utils.data.Dataset):
@@ -148,10 +148,10 @@ def evaluate(config, model, val_loader, device):
             total_loss0 = bce_loss(pred_inouts, gt_inouts.to(device))
 
             # hide MSE lose when out-of-frame
-            inout_mask = torch.tensor(float(inout == 1), dtype=torch.float32)
-            total_loss1 = total_pbce_loss * inout_mask.squeeze()
+            inout_mask = torch.tensor(gt_inouts, dtype=torch.float).to(device)
+            total_loss1 = total_pbce_loss * inout_mask
 
-            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1.mean()
+            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1.sum()
             validation_loss += total_loss.item()
 
             pbar.update(1)
@@ -410,14 +410,19 @@ def main():
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
             total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
 
+            #print(total_pbce_loss)
+
             # classification loss
             total_loss0 = bce_loss(pred_inouts, gt_inouts.to(device))
 
             # hide MSE lose when out-of-frame
-            inout_mask = torch.tensor(float(inout == 1), dtype=torch.float32)
-            total_loss1 = total_pbce_loss * inout_mask.squeeze()
+            inout_mask = torch.tensor(gt_inouts, dtype=torch.float).to(device)
+            total_loss1 = total_pbce_loss * inout_mask
 
-            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1.mean()
+            #print(inout_mask)
+            #print(total_loss1, total_loss0)
+
+            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1.sum()
         
             # Backpropagation and optimization
             optimizer.zero_grad()

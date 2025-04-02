@@ -3,7 +3,7 @@ model:
   name: "gazelle_dinov2_vitl14_inout"
   pretrained_path: "gazelle_dinov2_vitl14_inout.pt"  #"best_shared_epoch_4.pt"
   bce_weight: 1.0
-  mse_weight: 100.0
+  mse_weight: 1.0
   encoder:
     type: "DINOv2"                  # Pretrained image encoder (DINOv2, CLIP, etc.)
     pretrained: true                # Use pretrained weights
@@ -27,7 +27,7 @@ data:
   pre_test_path: "./gazefollow_extended"
 
 train:
-  batch_size: 32                    # Batch size for training
+  batch_size: 24                    # Batch size for training
   epochs: 15                    # Number of training epochs
   lr: 0.001                         # 0.00001
   inout_lr: 0.001
@@ -53,7 +53,7 @@ train:
 
 eval:
   checkpoint: "gazelle_large_vitl14_inout.pt"  # Path to the checkpoint for evaluation
-  batch_size: 32                    # Batch size for evaluation
+  batch_size: 24                    # Batch size for evaluation
   metrics:                          # Evaluation metrics
     - accuracy
     - precision
@@ -63,7 +63,7 @@ inference:
   checkpoint: "gazelle_dinov2_vitl14_inout.pt"
 
 logging:
-  log_dir: "results/vat2_adam_bs32_mse-weight100_1e3/"   # "results/checkpoints20/"
+  log_dir: "results/vat2_adam_bs24_mse-weight100_1e3/"   # "results/checkpoints20/"
   pre_dir: "results/prechecks70_adam_bs60_bce_1e2/"
   save_every: 5
 
