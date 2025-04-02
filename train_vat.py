@@ -151,7 +151,7 @@ def evaluate(config, model, val_loader, device):
             inout_mask = torch.tensor(float(inout == 1), dtype=torch.float32)
             total_loss1 = total_pbce_loss * inout_mask.squeeze()
 
-            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1
+            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1.mean()
             validation_loss += total_loss.item()
 
             pbar.update(1)
@@ -417,7 +417,7 @@ def main():
             inout_mask = torch.tensor(float(inout == 1), dtype=torch.float32)
             total_loss1 = total_pbce_loss * inout_mask.squeeze()
 
-            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1
+            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1.mean()
         
             # Backpropagation and optimization
             optimizer.zero_grad()

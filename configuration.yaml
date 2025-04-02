@@ -27,11 +27,11 @@ data:
   pre_test_path: "./gazefollow_extended"
 
 train:
-  batch_size: 24                    # Batch size for training
-  epochs: 21                    # Number of training epochs
-  lr: 0.0001                         # 0.00001
-  inout_lr: 0.0001
-  fuse_lr: 0.0001
+  batch_size: 32                    # Batch size for training
+  epochs: 15                    # Number of training epochs
+  lr: 0.001                         # 0.00001
+  inout_lr: 0.001
+  fuse_lr: 0.001
   optimizer: "Adam"                # Optimizer type (adam, adamw, sgd, etc.)
   weight_decay: 0.1                 # Weight decay for optimizer
   lr_scheduler:                     # Learning rate scheduler settings
@@ -53,7 +53,7 @@ train:
 
 eval:
   checkpoint: "gazelle_large_vitl14_inout.pt"  # Path to the checkpoint for evaluation
-  batch_size: 24                    # Batch size for evaluation
+  batch_size: 32                    # Batch size for evaluation
   metrics:                          # Evaluation metrics
     - accuracy
     - precision
@@ -63,11 +63,11 @@ inference:
   checkpoint: "gazelle_dinov2_vitl14_inout.pt"
 
 logging:
-  log_dir: "results/vat1_adam_bs24_mse_1e4/"   # "results/checkpoints20/"
+  log_dir: "results/vat2_adam_bs32_mse-weight100_1e3/"   # "results/checkpoints20/"
   pre_dir: "results/prechecks70_adam_bs60_bce_1e2/"
   save_every: 5
 
 hardware:
-  device: "cuda:0"                    # Device to use (cuda, cpu)
+  device: "cuda:2"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading
