@@ -91,7 +91,7 @@ def evaluate(config, model, val_loader, device):
     # MSEloss
     #pbce_loss = torch.nn.MSELoss(reduce=False)
     # BCELoss
-    pbce_loss = torch.nn.BCELoss(reduction="mean")
+    pbce_loss = torch.nn.BCELoss(reduction="none")
     validation_loss = 0.0
     val_total = len(val_loader)
 
@@ -142,7 +142,7 @@ def evaluate(config, model, val_loader, device):
 
             # regress loss
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
-            #total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
+            total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
 
             # classification loss
             total_loss0 = bce_loss(pred_inouts, gt_inouts.to(device))
@@ -308,7 +308,7 @@ def main():
     # MSEloss
     #pbce_loss = torch.nn.MSELoss(reduce=False)
     # Pixel wise binary CrossEntropy loss
-    pbce_loss = torch.nn.BCELoss(reduction="mean")
+    pbce_loss = torch.nn.BCELoss(reduction="none")
 
     # save dir for checkpoints
     os.makedirs(config['logging']['log_dir'], exist_ok=True)
@@ -408,7 +408,7 @@ def main():
             #print(pred_inouts.shape, gt_inouts.shape)
             # regress loss
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
-            #total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
+            total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
 
             #print("PBCE loss value: ", total_pbce_loss)  # value around 0.03
 

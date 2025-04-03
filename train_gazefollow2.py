@@ -288,6 +288,10 @@ def main():
     # transform
     # RandomCrop + flip + BBox Jitter (?)
     transform_list = []
+    # augmentation++
+    transform_list.append(transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1))
+    # transform_list.append(T.RandomApply([T.GaussianBlur(kernel_size=3)], p=0.3))
+    transform_list.append(transforms.RandomApply([transforms.RandomGrayscale(p=0.2)], p=0.3))
     # transform_list.append(transforms.RandomResizedCrop((input_resolution, input_resolution)))
     # TODO: deal with flipped bbox labels
     # transform_list.append(transforms.RandomHorizontalFlip(0.5))
@@ -296,7 +300,7 @@ def main():
     transform_list.append(transforms.Resize((input_resolution, input_resolution)))
     my_transform = transforms.Compose(transform_list)
 
-    my_transform = gazelle_transform
+    #my_transform = gazelle_transform
 
     # apply my_transform
     train_dataset = GazeFollowExtended(root_path=config['data']['pre_train_path'],
