@@ -410,7 +410,7 @@ def main():
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
             #total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
 
-            print("PBCE loss value: ", total_pbce_loss)
+            #print("PBCE loss value: ", total_pbce_loss)  # value around 0.03
 
             # classification loss
             total_loss0 = bce_loss(pred_inouts, gt_inouts.to(device))
@@ -419,8 +419,8 @@ def main():
             inout_mask = gt_inouts.to(device)
             total_loss1 = total_pbce_loss * inout_mask
 
-            print("mask in a batch: ", inout_mask)
-            print(total_loss1, total_loss0)
+            #print("mask in a batch: ", inout_mask)
+            #print(total_loss1, total_loss0)  #loss0 value around 0.6
 
             total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1.mean()
         
