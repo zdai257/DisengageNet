@@ -22,7 +22,7 @@ from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatm
 # VAT native data_loader
 #from dataset_builder import VideoAttTarget_video
 
-LOSS_SCALAR = 100
+LOSS_SCALAR = 1
 
 
 class VideoAttentionTarget(torch.utils.data.Dataset):
@@ -89,9 +89,9 @@ def evaluate(config, model, val_loader, device):
     bce_loss = torch.nn.BCELoss(reduction='mean')
 
     # MSEloss
-    pbce_loss = torch.nn.MSELoss(reduce=False)
+    #pbce_loss = torch.nn.MSELoss(reduce=False)
     # BCELoss
-    #pbce_loss = torch.nn.BCELoss(reduction="mean")
+    pbce_loss = torch.nn.BCELoss(reduction="mean")
     validation_loss = 0.0
     val_total = len(val_loader)
 
@@ -142,16 +142,16 @@ def evaluate(config, model, val_loader, device):
 
             # regress loss
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
-            total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
+            #total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
 
             # classification loss
             total_loss0 = bce_loss(pred_inouts, gt_inouts.to(device))
 
             # hide MSE lose when out-of-frame
-            inout_mask = torch.tensor(gt_inouts, dtype=torch.float).to(device)
+            inout_mask = gt_inouts.to(device)
             total_loss1 = total_pbce_loss * inout_mask
 
-            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1.sum()
+            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1.mean()
             validation_loss += total_loss.item()
 
             pbar.update(1)
@@ -306,9 +306,9 @@ def main():
     bce_loss = torch.nn.BCELoss(reduction='mean')
 
     # MSEloss
-    pbce_loss = torch.nn.MSELoss(reduce=False)
+    #pbce_loss = torch.nn.MSELoss(reduce=False)
     # Pixel wise binary CrossEntropy loss
-    #pbce_loss = torch.nn.BCELoss(reduction="mean")
+    pbce_loss = torch.nn.BCELoss(reduction="mean")
 
     # save dir for checkpoints
     os.makedirs(config['logging']['log_dir'], exist_ok=True)
@@ -408,21 +408,21 @@ def main():
             #print(pred_inouts.shape, gt_inouts.shape)
             # regress loss
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
-            total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
+            #total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
 
-            #print(total_pbce_loss)
+            print("PBCE loss value: ", total_pbce_loss)
 
             # classification loss
             total_loss0 = bce_loss(pred_inouts, gt_inouts.to(device))
 
             # hide MSE lose when out-of-frame
-            inout_mask = torch.tensor(gt_inouts, dtype=torch.float).to(device)
+            inout_mask = gt_inouts.to(device)
             total_loss1 = total_pbce_loss * inout_mask
 
-            #print(inout_mask)
-            #print(total_loss1, total_loss0)
+            print("mask in a batch: ", inout_mask)
+            print(total_loss1, total_loss0)
 
-            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1.sum()
+            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1.mean()
         
             # Backpropagation and optimization
             optimizer.zero_grad()
