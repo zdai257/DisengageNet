@@ -87,7 +87,9 @@ def apply_dilation_blur2(heatmap, dilation_kernel=5, blur_radius=0.8, peak_val=1
 def evaluate(config, model, val_loader, device):
     model.eval()
     bce_loss = torch.nn.BCELoss(reduction='mean')
-
+    # angle L1 loss
+    angle_loss = CosineL1()
+    softArgmax_fn = SoftArgmax2D()
     # MSEloss
     #pbce_loss = torch.nn.MSELoss(reduce=False)
     # BCELoss
@@ -116,13 +118,17 @@ def evaluate(config, model, val_loader, device):
 
             gt_heatmaps = []
             gt_inouts = []
-            for gtxs, gtys, ios in zip(gazex, gazey, inout):
+            bbox_ctrs, gt_xys = [], []
+            for bbxs, gtxs, gtys, ios in zip(bboxes, gazex, gazey, inout):
                 heads = len(gtxs)
                 # for VAT, gazex/y is a list of BatchSize * [Heads * [norm_val] ]
                 gt_heatmap = []
                 gt_io = []
                 # loop through No. of heads
-                for i, (gtx, gty, io) in enumerate(zip(gtxs, gtys, ios)):
+                for i, (bbx, gtx, gty, io) in enumerate(zip(bbxs, gtxs, gtys, ios)):
+                    # bbx: (xmin, ymin, xmax, ymax)
+                    bbox_ctrs.append(torch.tensor([(bbx[0] + bbx[2]) / 2, (bbx[1] + bbx[3]) / 2], dtype=torch.float32))
+                    gt_xys.append(torch.tensor([gtx[0], gty[0]], dtype=torch.float32))
                     a_heatmap = torch.zeros((64, 64))
                     a_io = torch.tensor([io], dtype=torch.float32)
                     x_grid = int(gtx[0] * 63)
@@ -139,19 +145,26 @@ def evaluate(config, model, val_loader, device):
 
             gt_heatmaps = torch.cat(gt_heatmaps)
             gt_inouts = torch.cat(gt_inouts)
-
+            gt_bbox_ctrs = torch.stack(bbox_ctrs)
+            gt_gt_xys = torch.stack(gt_xys)
+            ### Introduce gaze angle L1 loss ###
+            pred_xys = softArgmax_fn(pred_heatmaps)
+            total_angle_loss = angle_loss(pred_xys - gt_bbox_ctrs.to(device),
+                                          gt_gt_xys.to(device) - gt_bbox_ctrs.to(device))
             # regress loss
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
             total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
 
             # classification loss
             total_loss0 = bce_loss(pred_inouts, gt_inouts.to(device))
-
             # hide MSE lose when out-of-frame
             inout_mask = gt_inouts.to(device)
             total_loss1 = total_pbce_loss * inout_mask
+            total_loss2 = total_angle_loss * inout_mask
 
-            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1.mean()
+            total_loss = config['model']['bce_weight'] * total_loss0\
+                         + config['model']['mse_weight'] * total_loss1.mean() \
+                         + config['model']['angle_weight'] * total_loss2.mean()
             validation_loss += total_loss.item()
 
             pbar.update(1)
@@ -458,31 +471,29 @@ def main():
             #print(pred_heatmaps.shape, gt_heatmaps.shape)
             #print(pred_inouts.shape, gt_inouts.shape)
 
-            ### Introduce gaze angle L1 loss
+            ### Introduce gaze angle L1 loss ###
             pred_xys = softArgmax_fn(pred_heatmaps)
             total_angle_loss = angle_loss(pred_xys - gt_bbox_ctrs.to(device), gt_gt_xys.to(device) - gt_bbox_ctrs.to(device))
 
             # regress loss
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
             total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
-            print("Angle L1 loss: ", total_angle_loss)
+            #print("Angle L1 loss: ", total_angle_loss)
             #print("PBCE loss value: ", total_pbce_loss)  # value around 0.03
 
             # classification loss
             total_loss0 = bce_loss(pred_inouts, gt_inouts.to(device))
-
             # hide MSE lose when out-of-frame
             inout_mask = gt_inouts.to(device)
             total_loss1 = total_pbce_loss * inout_mask
             total_loss2 = total_angle_loss * inout_mask
 
             #print("mask in a batch: ", inout_mask)
-            print(total_loss1, total_loss0)  #loss0 value around 0.6
-            print(total_loss2)
-
+            #print(total_loss1, total_loss0)  #loss0 value around 0.6
+            #print(total_loss2)
             total_loss = config['model']['bce_weight'] * total_loss0 \
                          + config['model']['mse_weight'] * total_loss1.mean() \
-                         + 1.0 * total_loss2
+                         + config['model']['angle_weight'] * total_loss2.mean()
         
             # Backpropagation and optimization
             optimizer.zero_grad()
