@@ -174,6 +174,47 @@ def evaluate(config, model, val_loader, device):
     return float(validation_loss / val_total)
 
 
+class SoftArgmax2D(torch.nn.Module):
+    """Computes soft-argmax over a 2D heatmap to get differentiable coordinates."""
+    def __init__(self, temperature=0.1):
+        super(SoftArgmax2D, self).__init__()
+        self.temperature = temperature  # Controls sharpness of softmax
+
+    def forward(self, heatmap):
+        B, H, W = heatmap.shape  # Batch, Height, Width
+
+        # Apply softmax along spatial dimensions
+        heatmap = heatmap.view(B, -1)  # Flatten (B, H*W)
+        softmax_hm = F.softmax(heatmap / self.temperature, dim=-1)  # Apply softmax
+        softmax_hm = softmax_hm.view(B, H, W)  # Reshape back to (B, H, W)
+
+        # Create coordinate grids
+        x_range = torch.linspace(0, W - 1, W, device=heatmap.device).view(1, 1, W).expand(B, H, W)
+        y_range = torch.linspace(0, H - 1, H, device=heatmap.device).view(1, H, 1).expand(B, H, W)
+
+        # Compute expected coordinates
+        x_pred = torch.sum(x_range * softmax_hm, dim=(1, 2))  # Sum over H and W
+        y_pred = torch.sum(y_range * softmax_hm, dim=(1, 2))  # Sum over H and W
+
+        coords_pred = torch.stack([x_pred, y_pred], dim=1)  # Shape (B, 2)
+        return coords_pred
+
+
+class CosineL1(torch.nn.Module):
+    def __init__(self, epsilon=1e-8):
+        super(CosineL1, self).__init__()
+        self.epsilon = epsilon
+
+    def forward(self, y_pred_coords, y_true_coords):
+        y_pred_norm = y_pred_coords / (torch.norm(y_pred_coords, dim=1, keepdim=True) + self.epsilon)
+        y_true_norm = y_true_coords / (torch.norm(y_true_coords, dim=1, keepdim=True) + self.epsilon)
+
+        cosine_sim = torch.sum(y_pred_norm * y_true_norm, dim=1)
+        # Loss is in range [0, 2]
+        loss = 1 - cosine_sim
+        return loss
+
+
 def main():
 
     with open('configuration.yaml', 'r') as file:
@@ -305,6 +346,9 @@ def main():
     # Inout classficiation loss
     bce_loss = torch.nn.BCELoss(reduction='mean')
 
+    angle_loss = CosineL1()
+    softArgmax_fn = SoftArgmax2D()
+
     # MSEloss
     #pbce_loss = torch.nn.MSELoss(reduce=False)
     # Pixel wise binary CrossEntropy loss
@@ -362,6 +406,7 @@ def main():
 
             gt_heatmaps = []
             gt_inouts = []
+            bbox_ctrs, gt_xys = [], []
             for j, (bbxs, gtxs, gtys, ios) in enumerate(zip(bboxes, gazex, gazey, inout)):
                 heads = len(gtxs)
                 # for VAT, gazex/y is a list of BatchSize * [Heads * [norm_val] ]
@@ -369,6 +414,10 @@ def main():
                 gt_io = []
                 # loop through No. of heads
                 for i, (bbx, gtx, gty, io) in enumerate(zip(bbxs, gtxs, gtys, ios)):
+                    # bbx: (xmin, ymin, xmax, ymax)
+                    bbox_ctrs.append(torch.tensor([(bbx[0]+bbx[2])/2, (bbx[1]+bbx[3])/2], dtype=torch.float32))
+                    gt_xys.append(torch.tensor([gtx[0], gty[0]], dtype=torch.float32))
+
                     a_heatmap = torch.zeros((64, 64))
                     a_io = torch.tensor([io], dtype=torch.float32)
                     x_grid = int(gtx[0] * 63)
@@ -404,12 +453,19 @@ def main():
             gt_heatmaps = torch.cat(gt_heatmaps)
             gt_inouts = torch.cat(gt_inouts)
 
+            gt_bbox_ctrs = torch.stack(bbox_ctrs)
+            gt_gt_xys = torch.stack(gt_xys)
             #print(pred_heatmaps.shape, gt_heatmaps.shape)
             #print(pred_inouts.shape, gt_inouts.shape)
+
+            ### Introduce gaze angle L1 loss
+            pred_xys = softArgmax_fn(pred_heatmaps)
+            total_angle_loss = angle_loss(pred_xys - gt_bbox_ctrs.to(device), gt_gt_xys.to(device) - gt_bbox_ctrs.to(device))
+
             # regress loss
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
             total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
-
+            print("Angle L1 loss: ", total_angle_loss)
             #print("PBCE loss value: ", total_pbce_loss)  # value around 0.03
 
             # classification loss
@@ -418,11 +474,15 @@ def main():
             # hide MSE lose when out-of-frame
             inout_mask = gt_inouts.to(device)
             total_loss1 = total_pbce_loss * inout_mask
+            total_loss2 = total_angle_loss * inout_mask
 
             #print("mask in a batch: ", inout_mask)
-            #print(total_loss1, total_loss0)  #loss0 value around 0.6
+            print(total_loss1, total_loss0)  #loss0 value around 0.6
+            print(total_loss2)
 
-            total_loss = config['model']['bce_weight'] * total_loss0 + config['model']['mse_weight'] * total_loss1.mean()
+            total_loss = config['model']['bce_weight'] * total_loss0 \
+                         + config['model']['mse_weight'] * total_loss1.mean() \
+                         + 1.0 * total_loss2
         
             # Backpropagation and optimization
             optimizer.zero_grad()
