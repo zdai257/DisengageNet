@@ -90,10 +90,11 @@ def evaluate(config, model, val_loader, device):
     # angle L1 loss
     angle_loss = CosineL1()
     softArgmax_fn = SoftArgmax2D()
-    # MSEloss
-    #pbce_loss = torch.nn.MSELoss(reduce=False)
-    # BCELoss
-    pbce_loss = torch.nn.BCELoss(reduction="none")
+    # MSEloss or BCELoss
+    if config['model']['pbce_loss'] == "mse":
+        pbce_loss = torch.nn.MSELoss(reduction=config['model']['reduction'])
+    else:
+        pbce_loss = torch.nn.BCELoss(reduction=config['model']['reduction'])
     validation_loss = 0.0
     val_total = len(val_loader)
 
@@ -361,11 +362,11 @@ def main():
 
     angle_loss = CosineL1()
     softArgmax_fn = SoftArgmax2D()
-
-    # MSEloss
-    #pbce_loss = torch.nn.MSELoss(reduce=False)
-    # Pixel wise binary CrossEntropy loss
-    pbce_loss = torch.nn.BCELoss(reduction="none")
+    # MSEloss or BCELoss
+    if config['model']['pbce_loss'] == "mse":
+        pbce_loss = torch.nn.MSELoss(reduction=config['model']['reduction'])
+    else:
+        pbce_loss = torch.nn.BCELoss(reduction=config['model']['reduction'])
 
     # save dir for checkpoints
     os.makedirs(config['logging']['log_dir'], exist_ok=True)
@@ -374,11 +375,20 @@ def main():
     best_auc = 0.5
     best_l2 = float('inf')
     best_ap = 0.
-
     early_stop_count = 0
     best_checkpoint_path = None
     batch_size = config['train']['batch_size']
-
+    checkpoint_dir = "_".join([
+        config['train']['optimizer'],
+        "bs" + str(config['train']['batch_size']),
+        str(config['train']['lr']),
+        str(config['train']['inout_lr']),
+        config['model']['pbce_loss'],
+        str(config['model']['bce_weight']),
+        str(config['model']['mse_weight']),
+        str(config['model']['angle_weight'])
+    ])
+    print("Checkpoint saved at: ", os.path.join(config['logging']['log_dir'], checkpoint_dir))
     # START TRAINING
     for epoch in range(config['train']['epochs']):
         model.train(True)
@@ -407,8 +417,6 @@ def main():
             # GT = a list of Batch*[head_count*[pixel_norm ] ]
             #print(len(gazex), gazex[0])
             #print(len(inout), inout[0])
-
-            #TODO: fix shape to loss
 
             pred_inout = preds['inout']
             pred_inouts = torch.cat(pred_inout, 0)
@@ -515,7 +523,7 @@ def main():
 
         # Save model every 5 epochs
         if (epoch + 1) % config['logging']['save_every'] == 0:
-            checkpoint_path = os.path.join(config['logging']['log_dir'], f"model_epoch_{epoch + 1}.pt")
+            checkpoint_path = os.path.join(config['logging']['log_dir'], checkpoint_dir, f"model_epoch_{epoch + 1}.pt")
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
@@ -526,9 +534,9 @@ def main():
             print(f"Checkpoint saved at {checkpoint_path}")
 
         # Save best model based on VAL_LOSS
-        if val_loss < best_loss and epoch > 5:
+        if val_loss < best_loss and epoch > config['logging']['save_every']:
             best_loss = val_loss
-            checkpoint_path = os.path.join(config['logging']['log_dir'], f"best_epoch_{epoch + 1}.pt")
+            checkpoint_path = os.path.join(config['logging']['log_dir'], checkpoint_dir, f"best_epoch_{epoch + 1}.pt")
             best_checkpoint_path = checkpoint_path
             torch.save({
                 'epoch': epoch + 1,
@@ -551,7 +559,7 @@ def main():
 
         auc, l2, ap = eval_metrics(config, model, test_loader, device)
 
-        best_checkpoint = os.path.join(config['logging']['log_dir'],
+        best_checkpoint = os.path.join(config['logging']['log_dir'], checkpoint_dir,
                                        f"Best_model_ep{bst_ep}_l2{int(l2*100)}_ap{int(ap*100)}.pt")
         torch.save({
             'model_state_dict': model.state_dict(),
