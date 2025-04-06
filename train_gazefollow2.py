@@ -16,9 +16,9 @@ import yaml
 
 from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model
-from eval import eval_pretrain_gazefollow
-from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3
-import matplotlib.pyplot as plt
+from eval import eval_pretrain_gazefollow, gazefollow_auc, gazefollow_l2
+from network.utils import SoftArgmax2D, CosineL1, visualize_heatmap, visualize_heatmap2, visualize_heatmap3
+#import matplotlib.pyplot as plt
 
 LOSS_SCALAR = 1
 
@@ -125,7 +125,7 @@ def apply_dilation_blur(heatmap, dilation_kernel=3, blur_radius=1.):
     return heatmap_blurred.squeeze(0)  # Convert back to (64, 64)
 
 
-def apply_dilation_blur2(heatmap, dilation_kernel=3, blur_radius=1.0, peak_val=1.0, min_val=0.0):
+def apply_dilation_blur2(heatmap, dilation_kernel=3, blur_radius=0.7, peak_val=1.0, min_val=0.0):
     """
     Applies dilation followed by Gaussian blur and rescales values to maintain high confidence near the peak.
 
@@ -134,7 +134,7 @@ def apply_dilation_blur2(heatmap, dilation_kernel=3, blur_radius=1.0, peak_val=1
         dilation_kernel (int): Kernel size for dilation (must be odd).
         blur_radius (float): Standard deviation for Gaussian blur.
         peak_val (float): Maximum value for the peak (default=1.0).
-        min_val (float): Minimum value in the blurred area (default=0.6).
+        min_val (float): Minimum value in the blurred area (default=0.7).
     Returns:
         Tensor: Processed heatmap of shape (64, 64) with controlled confidence levels.
     """
@@ -157,15 +157,20 @@ def evaluate(config, model, val_loader, device):
     model.eval()
     batch_size = config['eval']['batch_size']
 
-    # MSEloss
-    #val_pbce_loss = torch.nn.MSELoss(reduction="mean")
-    #val_pbce_loss = torch.nn.MSELoss(reduce=False)
-    # pixel-wise BCE loss
-    val_pbce_loss = torch.nn.BCELoss()
-    #val_pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
+    # angle L1 loss
+    angle_loss = CosineL1()
+    softArgmax_fn = SoftArgmax2D()
+    # pixel-wise MSE / BCE loss
+    if config['model']['pbce_loss'] == "mse":
+        val_pbce_loss = torch.nn.MSELoss(reduction=config['model']['reduction'])
+    else:
+        val_pbce_loss = torch.nn.BCELoss(reduction=config['model']['reduction'])
     validation_loss = 0.0
     val_total = len(val_loader)
 
+    aucs = []
+    min_l2s = []
+    avg_l2s = []
     with tqdm(total=val_total) as pbar:
         for images, bboxes, gazex, gazey, inouts, h, w in val_loader:
 
@@ -175,15 +180,21 @@ def evaluate(config, model, val_loader, device):
             #                   'inout': list of Batch_size*tensor[head_count,] }
 
             pred_heatmap = preds['heatmap'][0]
+            # stack all predicted Heatmaps onto Batch dim: (N, 64, 64)
+            pred_heatmaps = torch.cat(pred_heatmap, 0)
 
             if True:
                 gt_gaze_xy = []
                 gtxs = gazex
                 gtys = gazey
+                bbox_ctrs, gt_xys = [], []
                 #print(gazex, gazey)
                 batch_size0 = len(gtxs)
-                # for GazeFollow, len should always be 1 (?!), so gtxs is no list ??
-                for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
+                # for GazeFollow, len(heads) should always be 1
+                for i, (bbx, gtx, gty) in enumerate(zip(bboxes, gtxs, gtys)):
+                    bbox_ctrs.append(torch.tensor([(bbx[0] + bbx[2]) / 2, (bbx[1] + bbx[3]) / 2], dtype=torch.float32))
+                    gt_xys.append(torch.tensor([gtx[0], gty[0]], dtype=torch.float32))
+
                     gt_heatmap = torch.zeros((64, 64))
                     x_grid = int(gtx[0] * 63)
                     y_grid = int(gty[0] * 63)
@@ -193,10 +204,26 @@ def evaluate(config, model, val_loader, device):
                     gt_heatmap = apply_dilation_blur2(gt_heatmap)
                     gt_gaze_xy.append(gt_heatmap)
 
-            gt_heatmaps = torch.stack(gt_gaze_xy)
+            head_i = 0
+            for j in range(images.shape[0]):
+                auc = gazefollow_auc(preds['heatmap'][head_i][j], gazex[j], gazey[j], h[j], w[j])
+                avg_l2, min_l2 = gazefollow_l2(preds['heatmap'][head_i][j], gazex[j], gazey[j])
+                aucs.append(auc)
+                avg_l2s.append(avg_l2)
+                min_l2s.append(min_l2)
 
-            loss = val_pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
-            #loss = loss.mean([1, 2])
+            gt_bbox_ctrs = torch.stack(bbox_ctrs)
+            gt_gt_xys = torch.stack(gt_xys)
+            gt_heatmaps = torch.stack(gt_gaze_xy)
+            ### Introduce gaze angle L1 loss ###
+            pred_xys = softArgmax_fn(pred_heatmaps)
+            # extend angle_loss to vector_l2 loss?
+            val_angle_loss = angle_loss(pred_xys - gt_bbox_ctrs.to(device),
+                                        gt_gt_xys.to(device) - gt_bbox_ctrs.to(device))
+
+            val_hp_loss = val_pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
+            val_hp_loss = val_hp_loss.mean([1, 2])
+            loss = config['model']['mse_weight'] * val_hp_loss + config['model']['angle_weight'] * val_angle_loss
 
             #gaze_in = torch.FloatTensor(inouts).to(device)
             #loss = torch.mul(loss, gaze_in)
@@ -205,6 +232,10 @@ def evaluate(config, model, val_loader, device):
 
             pbar.update(1)
 
+    auc = np.array(aucs).mean()
+    meanl2 = np.array(avg_l2s).mean()
+    minl2 = np.array(min_l2s).mean()
+    print("Eval -- AUC: {}; Mean L2: {}; Min L2: {}".format(auc, meanl2, minl2))
     return float(validation_loss / val_total)
 
 
@@ -221,7 +252,7 @@ def main():
 
     # load network
     model, gazelle_transform = get_gazelle_model(config)
-    model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True),
+    model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True, map_location=device),
                                   include_backbone=False)
     # model.load_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True, map_location=device))
 
@@ -278,14 +309,13 @@ def main():
     gamma = config['train']['pre_lr_scheduler']['gamma']  # Factor by which the learning rate will be reduced
     if config['train']['pre_lr_scheduler']['type'] == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
-                                                               T_max=100)
+                                                               T_max=10)
         # eta_min=config['train']['lr_scheduler']['min_lr'])
     else:  # linear lr scheduler
         scheduler = StepLR(optimizer, step_size=lr_step_size, gamma=gamma)
 
     input_resolution = config['data']['input_resolution']
 
-    # transform
     # RandomCrop + flip + BBox Jitter (?)
     transform_list = []
     # augmentation++
@@ -304,11 +334,11 @@ def main():
 
     # apply my_transform
     train_dataset = GazeFollowExtended(root_path=config['data']['pre_train_path'],
-                               img_transform=my_transform,
-                               split='train')
+                                       img_transform=my_transform,
+                                       split='train')
     test_dataset = GazeFollowExtended(root_path=config['data']['pre_test_path'],
-                              img_transform=my_transform,
-                              split='test')
+                                      img_transform=my_transform,
+                                      split='test')
     #print(train_dataset.__len__(), test_dataset.__len__())
     #train_dataset = GazeFollowExtended('gazefollow_extended', img_transform=my_transform, split='train')
     #test_dataset = GazeFollowExtended('gazefollow_extended', img_transform=my_transform, split='test')
@@ -331,18 +361,16 @@ def main():
         pin_memory=config['hardware']['pin_memory'],
         drop_last=True
     )
-
     # train_length = train_dataset.__len__()
 
-    ### Gaussian-Blurred Ground Truth + MSELoss
-    #pbce_loss = torch.nn.MSELoss(reduction='mean')  # Mean Squared Error Loss
-    #pbce_loss = torch.nn.MSELoss(reduce=False)
-    # another way of MSELoss
-    #pbce_loss = torch.nn.MSELoss(reduce=False)
-
-    # Pixel wise binary CrossEntropy loss
-    pbce_loss = torch.nn.BCELoss()
-    #pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
+    ### Loss ###
+    angle_loss = CosineL1()
+    softArgmax_fn = SoftArgmax2D()
+    # MSEloss or BCELoss
+    if config['model']['pbce_loss'] == "mse":
+        pbce_loss = torch.nn.MSELoss(reduction=config['model']['reduction'])
+    else:
+        pbce_loss = torch.nn.BCELoss(reduction=config['model']['reduction'])
 
     # save dir for checkpoints
     os.makedirs(config['logging']['pre_dir'], exist_ok=True)
@@ -354,6 +382,17 @@ def main():
     best_checkpoint_path = None
     batch_size = config['train']['pre_batch_size']
 
+    checkpoint_dir = "_".join([
+        config['train']['pre_optimizer'],
+        "bs" + str(config['train']['pre_batch_size']),
+        str(config['train']['pre_lr']),
+        str(config['train']['fuse_lr']),
+        config['model']['pbce_loss'],
+        str(config['model']['mse_weight']),
+        str(config['model']['angle_weight'])
+    ])
+    os.makedirs(os.path.join(config['logging']['pre_dir'], checkpoint_dir), exist_ok=True)
+    print("Pretrained checkpoint saved at: ", os.path.join(config['logging']['log_dir'], checkpoint_dir))
     # START TRAINING
     for epoch in range(config['train']['pre_epochs']):
         model.train(True)
@@ -367,15 +406,22 @@ def main():
             # preds = a dict of{'heatmap': list of head_count *tensor[Batch_size, 64, 64],
             #                   'inout': list of head_count *tensor[Batch_size,] }
             pred_heatmap = preds['heatmap'][0]
+            # stack all predicted Heatmaps onto Batch dim: (N, 64, 64)
+            pred_heatmaps = torch.cat(pred_heatmap, 0)
             
             if True:
                 gt_gaze_xy = []
                 gtxs = gazex
                 gtys = gazey
+                bbox_ctrs, gt_xys = [], []
                 #print(gazex, gazey)
                 batch_size0 = len(gtxs)
-                # for GazeFollow, len should always be 1 (?!), so gtxs is no list ??
-                for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
+                # for GazeFollow, len(heads) should always be 1
+                for i, (bbx, gtx, gty) in enumerate(zip(bboxes, gtxs, gtys)):
+                    # bbx: (xmin, ymin, xmax, ymax)
+                    bbox_ctrs.append(torch.tensor([(bbx[0] + bbx[2]) / 2, (bbx[1] + bbx[3]) / 2], dtype=torch.float32))
+                    gt_xys.append(torch.tensor([gtx[0], gty[0]], dtype=torch.float32))
+
                     gt_heatmap = torch.zeros((64, 64))
                     x_grid = int(gtx[0] * 63)
                     y_grid = int(gty[0] * 63)
@@ -402,14 +448,22 @@ def main():
                     
                     gt_gaze_xy.append(gt_heatmap)
 
+            gt_bbox_ctrs = torch.stack(bbox_ctrs)
+            gt_gt_xys = torch.stack(gt_xys)
             gt_heatmaps = torch.stack(gt_gaze_xy)
+            ### Introduce gaze angle L1 loss ###
+            pred_xys = softArgmax_fn(pred_heatmaps)
+            # extend angle_loss to vector_l2 loss?
+            angle_loss = angle_loss(pred_xys - gt_bbox_ctrs.to(device),
+                                    gt_gt_xys.to(device) - gt_bbox_ctrs.to(device))
 
-            loss = pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
-            #loss = loss.mean([1, 2])
+            hp_loss = pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
+            hp_loss = hp_loss.mean([1, 2])
 
             #gaze_in = torch.FloatTensor(inouts).to(device)
             #loss = torch.mul(loss, gaze_in)
             #loss = torch.sum(loss) / torch.sum(gaze_in)
+            loss = config['model']['mse_weight'] * hp_loss + config['model']['angle_weight'] * angle_loss
 
             # Backpropagation and optimization
             optimizer.zero_grad()
@@ -417,7 +471,6 @@ def main():
             # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Clip exploding gradients
             optimizer.step()
 
-            # Accumulate loss for reporting
             epoch_loss += loss.item()
 
         scheduler.step()
@@ -432,7 +485,7 @@ def main():
 
         # Save model every 5 epochs
         if (epoch + 1) % config['logging']['save_every'] == 0:
-            checkpoint_path = os.path.join(config['logging']['pre_dir'], f"model_epoch_{epoch + 1}.pt")
+            checkpoint_path = os.path.join(config['logging']['pre_dir'], checkpoint_dir, f"model_epoch_{epoch + 1}.pt")
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
@@ -442,23 +495,10 @@ def main():
             }, checkpoint_path)
             print(f"Checkpoint saved at {checkpoint_path}")
 
-            # Quantitative EVAL per 'save_every'
-            with torch.no_grad():
-                model.train(False)
-
-                auc, meanl2, minl2 = eval_pretrain_gazefollow(config, model, test_loader, device)
-
-                if auc > best_auc:
-                    print("AUC improved from {} to {}".format(best_auc, auc))
-                    best_auc = auc
-                if meanl2 < best_meanl2:
-                    print("Mean-L2 improved from {} to {}".format(best_meanl2, meanl2))
-                    best_meanl2 = meanl2
-
         # Save best model based on VAL_LOSS
-        if val_loss < best_loss and epoch > 5:
+        if val_loss < best_loss and epoch > config['logging']['save_every']:
             best_loss = val_loss
-            checkpoint_path = os.path.join(config['logging']['pre_dir'], f"best_epoch_{epoch + 1}.pt")
+            checkpoint_path = os.path.join(config['logging']['pre_dir'], checkpoint_dir, f"best_epoch_{epoch + 1}.pt")
             best_checkpoint_path = checkpoint_path
             torch.save({
                 'epoch': epoch + 1,
@@ -470,7 +510,6 @@ def main():
             print(f"\nBest model updated at epoch {epoch + 1} with loss {best_loss:.4f}")
 
     # Quantitative EVAL: discuss per image, and per head in image
-    # Test best.model on metrics
     checkpoint = torch.load(best_checkpoint_path)
     model_state_dict = checkpoint['model_state_dict']
     bst_ep = checkpoint['epoch']

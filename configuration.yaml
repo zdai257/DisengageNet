@@ -3,7 +3,7 @@ model:
   name: "gazelle_dinov2_vitl14_inout"
   pretrained_path: "gazelle_dinov2_vitl14_inout.pt"  #"best_shared_epoch_4.pt"
   bce_weight: 1.0
-  mse_weight: 15.0
+  mse_weight: 100.0
   angle_weight: 1.0
   pbce_loss: "mse"  #"mse" or "bce"
   reduction: "none"  #"mean" or "none"
@@ -63,7 +63,7 @@ inference:
 
 logging:
   log_dir: "results/"   # auto naming
-  pre_dir: "results/prechecks70_adam_bs60_bce_1e2/"
+  pre_dir: "results/pretrainGF/"
   save_every: 5
 
 hardware:

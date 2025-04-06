@@ -15,6 +15,45 @@ def split_tensors(tensor, split_counts):
     indices = torch.cumsum(torch.tensor([0] + split_counts), dim=0)
     return [tensor[indices[i]:indices[i+1]] for i in range(len(split_counts))]
 
+class SoftArgmax2D(torch.nn.Module):
+    """Computes soft-argmax over a 2D heatmap to get differentiable coordinates."""
+    def __init__(self, temperature=0.1):
+        super(SoftArgmax2D, self).__init__()
+        self.temperature = temperature  # Controls sharpness of softmax
+
+    def forward(self, heatmap):
+        B, H, W = heatmap.shape  # Batch, Height, Width
+
+        # Apply softmax along spatial dimensions
+        heatmap = heatmap.view(B, -1)  # Flatten (B, H*W)
+        softmax_hm = F.softmax(heatmap / self.temperature, dim=-1)  # Apply softmax
+        softmax_hm = softmax_hm.view(B, H, W)  # Reshape back to (B, H, W)
+
+        # Create coordinate grids
+        x_range = torch.linspace(0, W - 1, W, device=heatmap.device).view(1, 1, W).expand(B, H, W)
+        y_range = torch.linspace(0, H - 1, H, device=heatmap.device).view(1, H, 1).expand(B, H, W)
+
+        # Compute expected coordinates
+        x_pred = torch.sum(x_range * softmax_hm, dim=(1, 2))  # Sum over H and W
+        y_pred = torch.sum(y_range * softmax_hm, dim=(1, 2))  # Sum over H and W
+
+        coords_pred = torch.stack([x_pred, y_pred], dim=1)  # Shape (B, 2)
+        return coords_pred
+
+class CosineL1(torch.nn.Module):
+    def __init__(self, epsilon=1e-8):
+        super(CosineL1, self).__init__()
+        self.epsilon = epsilon
+
+    def forward(self, y_pred_coords, y_true_coords):
+        y_pred_norm = y_pred_coords / (torch.norm(y_pred_coords, dim=1, keepdim=True) + self.epsilon)
+        y_true_norm = y_true_coords / (torch.norm(y_true_coords, dim=1, keepdim=True) + self.epsilon)
+
+        cosine_sim = torch.sum(y_pred_norm * y_true_norm, dim=1)
+        # Loss is in range [0, 2]
+        loss = 1 - cosine_sim
+        return loss
+
 def visualize_heatmap(pil_image, heatmap, bbox=None):
     if isinstance(heatmap, torch.Tensor):
         heatmap = heatmap.detach().cpu().numpy()
