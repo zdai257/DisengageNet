@@ -1,5 +1,6 @@
 from __future__ import absolute_import
 import torch
+import torch.nn.functional as F
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFilter
 import numpy as np

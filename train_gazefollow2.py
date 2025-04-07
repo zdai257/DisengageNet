@@ -18,7 +18,7 @@ from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model
 from eval import eval_pretrain_gazefollow, gazefollow_auc, gazefollow_l2
 from network.utils import SoftArgmax2D, CosineL1, visualize_heatmap, visualize_heatmap2, visualize_heatmap3
-#import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 
 LOSS_SCALAR = 1
 
@@ -158,7 +158,7 @@ def evaluate(config, model, val_loader, device):
     batch_size = config['eval']['batch_size']
 
     # angle L1 loss
-    angle_loss = CosineL1()
+    angle_loss_fn = CosineL1()
     softArgmax_fn = SoftArgmax2D()
     # pixel-wise MSE / BCE loss
     if config['model']['pbce_loss'] == "mse":
@@ -180,8 +180,6 @@ def evaluate(config, model, val_loader, device):
             #                   'inout': list of Batch_size*tensor[head_count,] }
 
             pred_heatmap = preds['heatmap'][0]
-            # stack all predicted Heatmaps onto Batch dim: (N, 64, 64)
-            pred_heatmaps = torch.cat(pred_heatmap, 0)
 
             if True:
                 gt_gaze_xy = []
@@ -216,18 +214,19 @@ def evaluate(config, model, val_loader, device):
             gt_gt_xys = torch.stack(gt_xys)
             gt_heatmaps = torch.stack(gt_gaze_xy)
             ### Introduce gaze angle L1 loss ###
-            pred_xys = softArgmax_fn(pred_heatmaps)
+            pred_xys = softArgmax_fn(pred_heatmap)
             # extend angle_loss to vector_l2 loss?
-            val_angle_loss = angle_loss(pred_xys - gt_bbox_ctrs.to(device),
-                                        gt_gt_xys.to(device) - gt_bbox_ctrs.to(device))
+            val_angle_loss = angle_loss_fn(pred_xys - gt_bbox_ctrs.to(device),
+                                           gt_gt_xys.to(device) - gt_bbox_ctrs.to(device))
 
             val_hp_loss = val_pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
             val_hp_loss = val_hp_loss.mean([1, 2])
-            loss = config['model']['mse_weight'] * val_hp_loss + config['model']['angle_weight'] * val_angle_loss
-
+            
             #gaze_in = torch.FloatTensor(inouts).to(device)
             #loss = torch.mul(loss, gaze_in)
             #loss = torch.sum(loss) / torch.sum(gaze_in)
+            loss = config['model']['mse_weight'] * val_hp_loss.mean() + config['model']['angle_weight'] * val_angle_loss.mean()
+
             validation_loss += loss.item()
 
             pbar.update(1)
@@ -364,7 +363,7 @@ def main():
     # train_length = train_dataset.__len__()
 
     ### Loss ###
-    angle_loss = CosineL1()
+    angle_loss_fn = CosineL1()
     softArgmax_fn = SoftArgmax2D()
     # MSEloss or BCELoss
     if config['model']['pbce_loss'] == "mse":
@@ -406,8 +405,6 @@ def main():
             # preds = a dict of{'heatmap': list of head_count *tensor[Batch_size, 64, 64],
             #                   'inout': list of head_count *tensor[Batch_size,] }
             pred_heatmap = preds['heatmap'][0]
-            # stack all predicted Heatmaps onto Batch dim: (N, 64, 64)
-            pred_heatmaps = torch.cat(pred_heatmap, 0)
             
             if True:
                 gt_gaze_xy = []
@@ -452,10 +449,10 @@ def main():
             gt_gt_xys = torch.stack(gt_xys)
             gt_heatmaps = torch.stack(gt_gaze_xy)
             ### Introduce gaze angle L1 loss ###
-            pred_xys = softArgmax_fn(pred_heatmaps)
+            pred_xys = softArgmax_fn(pred_heatmap)
             # extend angle_loss to vector_l2 loss?
-            angle_loss = angle_loss(pred_xys - gt_bbox_ctrs.to(device),
-                                    gt_gt_xys.to(device) - gt_bbox_ctrs.to(device))
+            angle_loss = angle_loss_fn(pred_xys - gt_bbox_ctrs.to(device),
+                                       gt_gt_xys.to(device) - gt_bbox_ctrs.to(device))
 
             hp_loss = pbce_loss(pred_heatmap, gt_heatmaps.to(device)) * LOSS_SCALAR
             hp_loss = hp_loss.mean([1, 2])
@@ -463,7 +460,10 @@ def main():
             #gaze_in = torch.FloatTensor(inouts).to(device)
             #loss = torch.mul(loss, gaze_in)
             #loss = torch.sum(loss) / torch.sum(gaze_in)
-            loss = config['model']['mse_weight'] * hp_loss + config['model']['angle_weight'] * angle_loss
+
+            # hp_loss around 0.26; angle_loss in [0, 2]
+            #print(hp_loss, angle_loss)
+            loss = config['model']['mse_weight'] * hp_loss.mean() + config['model']['angle_weight'] * angle_loss.mean()
 
             # Backpropagation and optimization
             optimizer.zero_grad()
