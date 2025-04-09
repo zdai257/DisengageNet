@@ -83,6 +83,41 @@ def apply_dilation_blur2(heatmap, dilation_kernel=5, blur_radius=0.8, peak_val=1
     return heatmap_blurred.squeeze(0)  # Convert back to (64, 64)
 
 
+def get_custom_lr_groups(model, base_lr, inout_lr, lr_decay=0.8):
+    group_map = {
+        'lower_lr': [],
+        'low_lr': [],
+        'base_lr': [],
+        'inout_lr': [],
+    }
+    for name, param in model.named_parameters():
+        if not param.requires_grad or name.startswith("backbone"):
+            continue
+
+        if name.startswith("linear") or name.startswith("ms_fusion"):
+            group_map['lower_lr'].append(param)
+        elif name.startswith("transformer"):
+            group_map['low_lr'].append(param)
+        elif name.startswith("heatmap") or name.startswith("head"):
+            group_map['base_lr'].append(param)
+        elif name.startswith("inout"):
+            group_map['inout_lr'].append(param)
+        else:
+            raise TypeError("Unknown layer name detected in the model!")
+
+    num_groups = len(group_map)
+    param_groups = []
+    for i, (key, val) in enumerate(group_map.items()):
+        if key.startswith('inout'):
+            lr = inout_lr
+        else:
+            lr = base_lr * (lr_decay ** (num_groups - i - 1))
+        param_groups.append({'params': val, 'lr': lr})
+        print(f"Group: {key:<15} | LR: {lr:.6f} | #Params: {sum(p.numel() for p in val):,}")
+
+    return param_groups
+
+
 @torch.no_grad()
 def evaluate(config, model, val_loader, device):
     model.eval()
@@ -201,7 +236,7 @@ def main():
     num_epochs = config['train']['epochs']
 
     # select Network
-    model, gazelle_transform = get_gazelle_model(config)
+    model, gazelle_transform = get_gt360_model(config)
     # load a pre-trained model
     #model.load_state_dict(torch.load(config['model']['pretrained_path'], map_location=device, weights_only=True))
     # load from public pre-trained
@@ -240,17 +275,22 @@ def main():
     print(f"Number of params: {n_parameters}")
 
     # set lr differently
-    param_dicts = []
-    for n, p in model.named_parameters():
-        if p.requires_grad:
-            #if "ms_fusion" not in n and "inout" not in n:
-            #    param_dicts.append({'params': p, 'lr': config['train']['lr']})
-            #if "ms_fusion" not in n and "inout" in n:
-            #    param_dicts.append({'params': p, 'lr': config['train']['inout_lr']})
-            if 'ms_fusion' in n or 'transformer' in n:
-                param_dicts.append({'params': p, 'lr': config['train']['fuse_lr']})
-            else:
-                param_dicts.append({'params': p, 'lr': config['train']['lr']})
+    if config['train']['layer_decay']:
+        param_dicts = get_custom_lr_groups(model, config['train']['lr'], config['train']['inout_lr'], lr_decay=0.8)
+    else:
+        param_dicts = []
+        for n, p in model.named_parameters():
+            if p.requires_grad:
+                # if "ms_fusion" not in n and "inout" not in n:
+                #    param_dicts.append({'params': p, 'lr': config['train']['lr']})
+                # if "ms_fusion" not in n and "inout" in n:
+                #    param_dicts.append({'params': p, 'lr': config['train']['inout_lr']})
+                if 'inout' in n:
+                    param_dicts.append({'params': p, 'lr': config['train']['inout_lr']})
+                elif 'linear' in n or 'ms_fusion' in n or 'transformer' in n:
+                    param_dicts.append({'params': p, 'lr': config['train']['fuse_lr']})
+                else:
+                    param_dicts.append({'params': p, 'lr': config['train']['lr']})
 
     if config['train']['optimizer'] == 'Adam':
         optimizer = Adam(param_dicts, weight_decay=config['train']['weight_decay'])
@@ -264,7 +304,7 @@ def main():
     gamma = config['train']['lr_scheduler']['gamma']  # Factor by which the learning rate will be reduced
     if config['train']['lr_scheduler']['type'] == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
-                                                               T_max=10)
+                                                               T_max=20)
                                                                #eta_min=config['train']['lr_scheduler']['min_lr'])
     elif config['train']['lr_scheduler']['type'] == "warmup":
         def warmup_lambda(epoch):
