@@ -55,6 +55,13 @@ class CosineL1(torch.nn.Module):
         loss = 1 - cosine_sim
         return loss
 
+class VectorL2Loss(torch.nn.Module):
+    def __init__(self):
+        super(VectorL2Loss, self).__init__()
+
+    def forward(self, y_pred_coords, y_true_coords):
+        return ((y_pred_coords - y_true_coords) ** 2).mean()
+
 def visualize_heatmap(pil_image, heatmap, bbox=None):
     if isinstance(heatmap, torch.Tensor):
         heatmap = heatmap.detach().cpu().numpy()

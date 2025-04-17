@@ -3,8 +3,9 @@ model:
   name: "gazelle_dinov2_vitl14_inout"
   pretrained_path: "gazelle_dinov2_vitl14_inout.pt"  #"best_shared_epoch_4.pt"
   bce_weight: 1.0
-  mse_weight: 150.0
+  mse_weight: 190.0
   angle_weight: 0.5
+  vec_weight: 0.5
   pbce_loss: "mse"  #"mse" or "bce"
   reduction: "none"  #"mean" or "none"
   encoder:
@@ -33,7 +34,7 @@ train:
   fuse_lr: 0.001
   layer_decay: 1                    # 0 or 1
   optimizer: "AdamW"                # Optimizer type (adam, adamw, sgd, etc.)
-  weight_decay: 0.1                 # Weight decay for optimizer
+  weight_decay: 0.01                # Weight decay for optimizer
   lr_scheduler:                     # Learning rate scheduler settings
     type: "cosine"                  # cosine / linear / warmup (for warmup training)
     step_size: 5                   # Step size for step scheduler / warmup: warmup_epochs
@@ -63,11 +64,11 @@ inference:
   checkpoint: "gazelle_dinov2_vitl14_inout.pt"
 
 logging:
-  log_dir: "results/gt360/"   # auto naming
+  log_dir: "results/"   # auto naming
   pre_dir: "results/pretrainGF/"
   save_every: 5
 
 hardware:
-  device: "cuda:0"                    # Device to use (cuda, cpu)
+  device: "cuda:4"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading

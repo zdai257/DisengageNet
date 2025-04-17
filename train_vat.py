@@ -17,7 +17,7 @@ import yaml
 from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model
 from eval import eval_metrics, average_precision_score, vat_auc, vat_l2
-from network.utils import SoftArgmax2D, CosineL1, visualize_heatmap, visualize_heatmap2, visualize_heatmap3
+from network.utils import SoftArgmax2D, CosineL1, VectorL2Loss, visualize_heatmap2, visualize_heatmap3
 #import matplotlib.pyplot as plt
 # VAT native data_loader
 #from dataset_builder import VideoAttTarget_video
@@ -124,6 +124,8 @@ def evaluate(config, model, val_loader, device):
     bce_loss = torch.nn.BCELoss(reduction='mean')
     # angle L1 loss
     angle_loss = CosineL1()
+    vec_loss = VectorL2Loss()
+
     softArgmax_fn = SoftArgmax2D()
     # MSEloss or BCELoss
     if config['model']['pbce_loss'] == "mse":
@@ -187,6 +189,10 @@ def evaluate(config, model, val_loader, device):
             pred_xys = softArgmax_fn(pred_heatmaps)
             total_angle_loss = angle_loss(pred_xys - gt_bbox_ctrs.to(device),
                                           gt_gt_xys.to(device) - gt_bbox_ctrs.to(device))
+            ### vector L2 loss ###
+            total_vec_loss = vec_loss(pred_xys - gt_bbox_ctrs.to(device),
+                                      gt_gt_xys.to(device) - gt_bbox_ctrs.to(device))
+
             # regress loss
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
             total_pbce_loss = total_pbce_loss.mean([1, 2])  # for MSELoss
@@ -197,10 +203,12 @@ def evaluate(config, model, val_loader, device):
             inout_mask = gt_inouts.to(device)
             total_loss1 = total_pbce_loss * inout_mask
             total_loss2 = total_angle_loss * inout_mask
+            total_loss3 = total_vec_loss * inout_mask
 
             total_loss = config['model']['bce_weight'] * total_loss0\
                          + config['model']['mse_weight'] * total_loss1.mean() \
-                         + config['model']['angle_weight'] * total_loss2.mean()
+                         + config['model']['angle_weight'] * total_loss2.mean() \
+                         + config['model']['vec_weight'] * total_loss3.mean()
             validation_loss += total_loss.item()
 
             pbar.update(1)
@@ -236,7 +244,7 @@ def main():
     num_epochs = config['train']['epochs']
 
     # select Network
-    model, gazelle_transform = get_gt360_model(config)
+    model, gazelle_transform = get_gazelle_model(config)
     # load a pre-trained model
     #model.load_state_dict(torch.load(config['model']['pretrained_path'], map_location=device, weights_only=True))
     # load from public pre-trained
@@ -360,6 +368,8 @@ def main():
     bce_loss = torch.nn.BCELoss(reduction='mean')
 
     angle_loss = CosineL1()
+    vec_loss = VectorL2Loss()
+
     softArgmax_fn = SoftArgmax2D()
     # MSEloss or BCELoss
     if config['model']['pbce_loss'] == "mse":
@@ -385,7 +395,8 @@ def main():
         config['model']['pbce_loss'],
         str(config['model']['bce_weight']),
         str(config['model']['mse_weight']),
-        str(config['model']['angle_weight'])
+        str(config['model']['angle_weight']),
+        str(config['model']['vec_weight'])
     ])
     os.makedirs(os.path.join(config['logging']['log_dir'], checkpoint_dir), exist_ok=True)
     print("Checkpoint saved at: ", os.path.join(config['logging']['log_dir'], checkpoint_dir))
@@ -482,6 +493,8 @@ def main():
             ### Introduce gaze angle L1 loss ###
             pred_xys = softArgmax_fn(pred_heatmaps)
             total_angle_loss = angle_loss(pred_xys - gt_bbox_ctrs.to(device), gt_gt_xys.to(device) - gt_bbox_ctrs.to(device))
+            ### Gaze vector L2 loss ###
+            total_vec_loss = vec_loss(pred_xys - gt_bbox_ctrs.to(device), gt_gt_xys.to(device) - gt_bbox_ctrs.to(device))
 
             # regress loss
             total_pbce_loss = pbce_loss(pred_heatmaps, gt_heatmaps.to(device)) * LOSS_SCALAR
@@ -495,13 +508,15 @@ def main():
             inout_mask = gt_inouts.to(device)
             total_loss1 = total_pbce_loss * inout_mask
             total_loss2 = total_angle_loss * inout_mask
+            total_loss3 = total_vec_loss * inout_mask
 
             #print("mask in a batch: ", inout_mask)
             #print(total_loss1, total_loss0)  #loss0 value around 0.6
             #print(total_loss2)
             total_loss = config['model']['bce_weight'] * total_loss0 \
                          + config['model']['mse_weight'] * total_loss1.mean() \
-                         + config['model']['angle_weight'] * total_loss2.mean()
+                         + config['model']['angle_weight'] * total_loss2.mean() \
+                         + config['model']['vec_weight'] * total_loss3.mean()
         
             # Backpropagation and optimization
             optimizer.zero_grad()
