@@ -5,7 +5,7 @@ model:
   bce_weight: 1.0
   mse_weight: 190.0
   angle_weight: 0.5
-  vec_weight: 0.5
+  vec_weight: 0.0
   pbce_loss: "mse"  #"mse" or "bce"
   reduction: "none"  #"mean" or "none"
   encoder:
@@ -27,7 +27,7 @@ data:
   pre_test_path: "./gazefollow_extended"
 
 train:
-  batch_size: 24                    # Batch size for training
+  batch_size: 32                    # Batch size for training
   epochs: 15                    # Number of training epochs
   lr: 0.001                         # 0.00001
   inout_lr: 0.01
@@ -54,7 +54,7 @@ train:
 
 eval:
   checkpoint: "gazelle_large_vitl14_inout.pt"  # Path to the checkpoint for evaluation
-  batch_size: 24                    # Batch size for evaluation
+  batch_size: 32                    # Batch size for evaluation
   metrics:                          # Evaluation metrics
     - accuracy
     - precision
@@ -64,7 +64,7 @@ inference:
   checkpoint: "gazelle_dinov2_vitl14_inout.pt"
 
 logging:
-  log_dir: "results/"   # auto naming
+  log_dir: "results/moe/"   # auto naming
   pre_dir: "results/pretrainGF/"
   save_every: 5
 

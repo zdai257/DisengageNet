@@ -15,7 +15,7 @@ from tqdm import tqdm
 import yaml
 
 from network.network_builder import get_gazelle_model
-from network.network_builder_update2 import get_gt360_model
+from network.network_builder_update2 import get_gt360_model, get_gtmoe_model
 from eval import eval_metrics, average_precision_score, vat_auc, vat_l2
 from network.utils import SoftArgmax2D, CosineL1, VectorL2Loss, visualize_heatmap2, visualize_heatmap3
 #import matplotlib.pyplot as plt
@@ -244,7 +244,7 @@ def main():
     num_epochs = config['train']['epochs']
 
     # select Network
-    model, gazelle_transform = get_gazelle_model(config)
+    model, gazelle_transform = get_gtmoe_model(config)
     # load a pre-trained model
     #model.load_state_dict(torch.load(config['model']['pretrained_path'], map_location=device, weights_only=True))
     # load from public pre-trained

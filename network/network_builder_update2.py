@@ -396,7 +396,7 @@ class GazeLLE(nn.Module):
 class GTMoE(nn.Module):
     def __init__(self, backbone, in_channels=768, num_routed_experts=4, num_shared_experts=2,
                  inout=False, dim=256, num_layers=3, in_size=(448, 448), out_size=(64, 64), transformer_type=None):
-        super(GTMoE).__init__()
+        super().__init__()
         self.backbone = backbone
         self.dim = dim
         self.num_layers = num_layers
@@ -617,16 +617,6 @@ def positionalencoding2d(d_model, height, width):
 # Step 4: Update Model Creation Functions
 #############################################
 
-def get_gtmoe_model(configuration):
-    factory = {
-        "gazelle_dinov2_vitb14": gazelle_dinov2_vitb14,
-        "gazelle_dinov2_vitl14": gazelle_dinov2_vitl14,
-        "gazelle_dinov2_vitb14_inout": gazelle_dinov2_vitb14_inout,
-        "gazelle_dinov2_vitl14_inout": gazelle_dinov2_vitl14_inout,
-    }
-    assert configuration['model']['name'] in factory.keys(), "invalid model name"
-    return factory[configuration['model']['name']]()
-
 def get_gt360_model(configuration):
     factory = {
         "gazelle_dinov2_vitb14": gazelle_dinov2_vitb14,
@@ -666,3 +656,10 @@ def moe_dinov2_vitl14_inout():  # performer
     transform = backbone.get_transform((448, 448))
     model = GTMoE(backbone, inout=True)
     return model, transform
+
+def get_gtmoe_model(configuration):
+    factory = {
+        "gazelle_dinov2_vitl14_inout": moe_dinov2_vitl14_inout,
+    }
+    assert configuration['model']['name'] in factory.keys(), "invalid model name"
+    return factory[configuration['model']['name']]()
