@@ -15,7 +15,7 @@ from tqdm import tqdm
 import yaml
 
 from network.network_builder import get_gazelle_model
-from network.network_builder_update2 import get_gt360_model
+from network.network_builder_update2 import get_gt360_model, get_gazemoe_model
 from eval import eval_pretrain_gazefollow, gazefollow_auc, gazefollow_l2
 from network.utils import SoftArgmax2D, CosineL1, visualize_heatmap, visualize_heatmap2, visualize_heatmap3
 import matplotlib.pyplot as plt
@@ -250,7 +250,7 @@ def main():
     num_epochs = config['train']['pre_epochs']
 
     # load network
-    model, gazelle_transform = get_gazelle_model(config)
+    model, gazelle_transform = get_gazemoe_model(config)
     model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True, map_location=device),
                                   include_backbone=False)
     # model.load_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True, map_location=device))
@@ -278,7 +278,7 @@ def main():
 
     # Verify the freezing and initialization
     for name, param in model.named_parameters():
-        # print(f"{name}: requires_grad={param.requires_grad}")
+        print(f"{name}: requires_grad={param.requires_grad}")
         pass
 
     model.to(device)
