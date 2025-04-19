@@ -278,7 +278,7 @@ def main():
 
     # Verify the freezing and initialization
     for name, param in model.named_parameters():
-        print(f"{name}: requires_grad={param.requires_grad}")
+        #print(f"{name}: requires_grad={param.requires_grad}")
         pass
 
     model.to(device)

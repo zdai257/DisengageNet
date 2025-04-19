@@ -244,7 +244,7 @@ def main():
     num_epochs = config['train']['epochs']
 
     # select Network
-    model, gazelle_transform = get_gtmoe_model(config)
+    model, gazelle_transform = get_gazemoe_model(config)
     # load a pre-trained model
     #model.load_state_dict(torch.load(config['model']['pretrained_path'], map_location=device, weights_only=True))
     # load from public pre-trained

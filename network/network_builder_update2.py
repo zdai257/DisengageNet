@@ -344,16 +344,17 @@ class GazeLLE(nn.Module):
 # Feed-forward Mixture-of-Experts (MoE)
 #############################################
 class MoELayer(nn.Module):
-    def __init__(self, in_features, out_features, num_experts=8, top_k=2, hidden_dim=None):
+    def __init__(self, in_features, out_features, num_experts=8, num_shared_experts=2, top_k=2, hidden_dim=None):
         super().__init__()
-        self.num_experts = num_experts
+        self.num_experts = num_experts  # Routed experts
+        self.num_shared_experts = num_shared_experts  # Shared experts
         self.top_k = top_k
         self.in_features = in_features
         self.out_features = out_features
-        self.hidden_dim = hidden_dim if hidden_dim is not None else in_features * 4  # Default expansion like FFN
+        self.hidden_dim = hidden_dim if hidden_dim is not None else in_features * 4
 
-        # Expert networks: each is a two-layer FFN
-        self.experts = nn.ModuleList([
+        # Routed expert networks
+        self.routed_experts = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(in_features, self.hidden_dim),
                 nn.GELU(),
@@ -361,7 +362,16 @@ class MoELayer(nn.Module):
             ) for _ in range(num_experts)
         ])
 
-        # Gating network
+        # Shared expert networks
+        self.shared_experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(in_features, self.hidden_dim),
+                nn.GELU(),
+                nn.Linear(self.hidden_dim, out_features)
+            ) for _ in range(num_shared_experts)
+        ])
+
+        # Gating network for routed experts only
         self.gate = nn.Linear(in_features, num_experts)
 
     def forward(self, x):
@@ -369,36 +379,35 @@ class MoELayer(nn.Module):
         batch_shape = x.shape[:-1]
         x_flat = x.view(-1, self.in_features)  # [batch_size * seq_len, in_features]
 
-        # Compute gating scores
-        gate_logits = self.gate(x_flat)  # [batch_size * seq_len, num_experts]
-        gate_weights = torch.softmax(gate_logits, dim=-1)  # [batch_size * seq_len, num_experts]
-
-        # Select top-k experts
-        top_k_weights, top_k_indices = gate_weights.topk(self.top_k, dim=-1)  # [batch_size * seq_len, top_k]
-        top_k_weights = top_k_weights / top_k_weights.sum(dim=-1, keepdim=True)  # Normalize
-
         # Initialize output
         output = torch.zeros(x_flat.shape[0], self.out_features, device=x.device)
 
-        # Compute weighted sum of expert outputs
+        # Shared experts: always applied
+        for expert in self.shared_experts:
+            output += expert(x_flat) / (self.num_shared_experts + 1e-10)  # Average shared contributions
+
+        # Routed experts: top-k selection
+        gate_logits = self.gate(x_flat)  # [batch_size * seq_len, num_experts]
+        gate_weights = torch.softmax(gate_logits, dim=-1)  # [batch_size * seq_len, num_experts]
+        top_k_weights, top_k_indices = gate_weights.topk(self.top_k, dim=-1)  # [batch_size * seq_len, top_k]
+        top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-10)  # Normalize
+
+        # Compute weighted sum of routed expert outputs
         for k in range(self.top_k):
             expert_idx = top_k_indices[:, k]  # [batch_size * seq_len]
             weights = top_k_weights[:, k].unsqueeze(-1)  # [batch_size * seq_len, 1]
-
-            # Compute expert outputs for all samples
             for i in range(self.num_experts):
                 mask = (expert_idx == i).float().unsqueeze(-1)  # [batch_size * seq_len, 1]
-                expert_output = self.experts[i](x_flat)  # [batch_size * seq_len, out_features]
+                expert_output = self.routed_experts[i](x_flat)  # [batch_size * seq_len, out_features]
                 output += mask * weights * expert_output
 
         # Reshape back to original shape
-        output = output.view(*batch_shape,
-                             self.out_features)  # [batch_size, seq_len, out_features] or [batch_size, out_features]
+        output = output.view(*batch_shape, self.out_features)
         return output
 
 # Modified Transformer (ViT) Block with MoE
 class MoEBlock(Block):
-    def __init__(self, dim, num_heads, mlp_ratio=4., drop_path=0.1, num_experts=8, top_k=2):
+    def __init__(self, dim, num_heads, mlp_ratio=4., drop_path=0.1, num_experts=8, num_shared_experts=2, top_k=2):
         super().__init__(dim, num_heads, mlp_ratio=mlp_ratio, drop_path=drop_path)
         # Replace the FFN (self.mlp) with MoELayer
         hidden_dim = int(dim * mlp_ratio)
@@ -406,6 +415,7 @@ class MoEBlock(Block):
             in_features=dim,
             out_features=dim,
             num_experts=num_experts,
+            num_shared_experts=num_shared_experts,
             top_k=top_k,
             hidden_dim=hidden_dim
         )
@@ -413,7 +423,7 @@ class MoEBlock(Block):
 
 class GazeMoE(nn.Module):
     def __init__(self, backbone, inout=False, dim=256, num_layers=3, in_size=(448, 448), out_size=(64, 64),
-                 num_experts=8, top_k=2, is_ffn_moe=False):
+                 num_experts=8, num_shared_experts=2, top_k=2, is_ffn_moe=False):
         super().__init__()
         self.backbone = backbone
         self.dim = dim
@@ -423,6 +433,7 @@ class GazeMoE(nn.Module):
         self.out_size = out_size
         self.inout = inout
         self.num_experts = num_experts
+        self.num_shared_experts = num_shared_experts
         self.top_k = top_k
 
         self.linear = nn.Conv2d(backbone.get_dimension(), self.dim, 1)
@@ -437,6 +448,7 @@ class GazeMoE(nn.Module):
                     mlp_ratio=4,
                     drop_path=0.1,
                     num_experts=self.num_experts,
+                    num_shared_experts=self.num_shared_experts,
                     top_k=self.top_k
                 ) for _ in range(num_layers)
             ])
@@ -460,7 +472,8 @@ class GazeMoE(nn.Module):
                 MoELayer(self.dim, 128, num_experts=self.num_experts, top_k=self.top_k),
                 nn.ReLU(),
                 nn.Dropout(0.1),
-                MoELayer(128, 1, num_experts=self.num_experts, top_k=self.top_k),
+                MoELayer(128, 1, num_experts=self.num_experts, num_shared_experts=self.num_shared_experts,
+                         top_k=self.top_k),
                 nn.Sigmoid()
             )
             self.inout_token = nn.Embedding(1, self.dim)
@@ -597,22 +610,24 @@ def gazelle_dinov2_vitl14_inout(transformer_type="shared"):  # performer / vanil
     model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)
     return model, transform
 
-def gazemoe_dinov2_vitl14_inout(num_experts, top_k, is_ffn_moe):
+def gazemoe_dinov2_vitl14_inout(num_experts, num_shared_experts, top_k, is_ffn_moe):
     # origin backbone
     backbone = DinoV2Backbone('dinov2_vitl14')
     # TODO allow multi-scale backbone
     #backbone = DinoV2BackboneMultiScale('dinov2_vitl14')
     transform = backbone.get_transform((448, 448))
-    model = GazeMoE(backbone, inout=True, num_experts=num_experts, top_k=top_k, is_ffn_moe=is_ffn_moe)
+    model = GazeMoE(backbone, inout=True, num_experts=num_experts, num_shared_experts=num_shared_experts,
+                    top_k=top_k, is_ffn_moe=is_ffn_moe)
     return model, transform
 
 def get_gazemoe_model(configuration):
     factory = {
-        "gazelle_dinov2_vitl14_inout": gazemoe_dinov2_vitl14_inout,
+        "gazemoe_dinov2_vitl14_inout": gazemoe_dinov2_vitl14_inout,
     }
     assert configuration['model']['name'] in factory.keys(), "invalid model name"
     return factory[configuration['model']['name']](
         num_experts=configuration['model']['num_experts'],
+        num_shared_experts=configuration['model']['num_shared_experts'],
         top_k=configuration['model']['top_k'],
         is_ffn_moe=configuration['model']['is_ffn_moe']
     )
