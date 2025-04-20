@@ -423,7 +423,7 @@ class MoEBlock(Block):
 
 class GazeMoE(nn.Module):
     def __init__(self, backbone, inout=False, dim=256, num_layers=3, in_size=(448, 448), out_size=(64, 64),
-                 num_experts=8, num_shared_experts=2, top_k=2, is_ffn_moe=False):
+                 num_experts=8, num_shared_experts=2, top_k=2, moe_type="vanilla", is_msf=False):
         super().__init__()
         self.backbone = backbone
         self.dim = dim
@@ -435,12 +435,32 @@ class GazeMoE(nn.Module):
         self.num_experts = num_experts
         self.num_shared_experts = num_shared_experts
         self.top_k = top_k
+        if not is_msf:
+            # Legacy
+            self.ms_fusion = nn.Conv2d(backbone.get_dimension(), self.dim, 1)
+        else:
+            # Multi-scale fusion module (lightweight version)
+            multi_scale_channels = backbone.get_multi_scale_channels()
+            self.ms_fusion = MultiScaleFusionLite(
+                in_channels_list=multi_scale_channels,
+                out_channels=self.dim,
+                target_size=(self.featmap_h, self.featmap_w)
+            )
 
-        self.linear = nn.Conv2d(backbone.get_dimension(), self.dim, 1)
         self.register_buffer("pos_embed",
-                             positionalencoding2d(self.dim, self.featmap_h, self.featmap_w).squeeze(dim=0).squeeze(
-                                 dim=0))
-        if is_ffn_moe:
+                             positionalencoding2d(self.dim, self.featmap_h, self.featmap_w).squeeze(dim=0).squeeze(dim=0))
+
+        if moe_type == "vanilla":
+            self.transformer = nn.Sequential(*[
+                Block(dim=self.dim, num_heads=8, mlp_ratio=4, drop_path=0.1)
+                for _ in range(num_layers)
+            ])
+        elif moe_type == "shared":
+            # Create one vanilla block and share it across num_layers iterations.
+            vanilla_block = Block(dim=self.dim, num_heads=8, mlp_ratio=4, drop_path=0.1)
+            self.transformer = SharedTransformer(vanilla_block, num_layers)
+        else:
+            # Create Transformer blocks with MoE
             self.transformer = nn.Sequential(*[
                 MoEBlock(
                     dim=self.dim,
@@ -452,15 +472,7 @@ class GazeMoE(nn.Module):
                     top_k=self.top_k
                 ) for _ in range(num_layers)
             ])
-        else:
-            self.transformer = nn.Sequential(*[
-                Block(
-                    dim=self.dim,
-                    num_heads=8,
-                    mlp_ratio=4,
-                    drop_path=0.1)
-                for i in range(num_layers)
-            ])
+
         self.heatmap_head = nn.Sequential(
             nn.ConvTranspose2d(dim, dim, kernel_size=2, stride=2),
             nn.Conv2d(dim, 1, kernel_size=1, bias=False),
@@ -469,6 +481,14 @@ class GazeMoE(nn.Module):
         self.head_token = nn.Embedding(1, self.dim)
         if self.inout:
             self.inout_head = nn.Sequential(
+                nn.Linear(self.dim, 128),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(128, 1),
+                nn.Sigmoid()
+            )
+            """
+            self.inout_head = nn.Sequential(
                 MoELayer(self.dim, 128, num_experts=self.num_experts, top_k=self.top_k),
                 nn.ReLU(),
                 nn.Dropout(0.1),
@@ -476,12 +496,15 @@ class GazeMoE(nn.Module):
                          top_k=self.top_k),
                 nn.Sigmoid()
             )
+            """
             self.inout_token = nn.Embedding(1, self.dim)
 
     def forward(self, input):
         num_ppl_per_img = [len(bbox_list) for bbox_list in input["bboxes"]]
-        x = self.backbone.forward(input["images"])
-        x = self.linear(x)
+        # Multi-scale features and fusion
+        feats = self.backbone.forward(input["images"])
+        x = self.ms_fusion(feats)  # [B, dim, featmap_h, featmap_w]
+
         x = x + self.pos_embed
         x = utils.repeat_tensors(x, num_ppl_per_img)
         head_maps = torch.cat(self.get_input_head_maps(input["bboxes"]), dim=0).to(x.device)
@@ -610,14 +633,15 @@ def gazelle_dinov2_vitl14_inout(transformer_type="shared"):  # performer / vanil
     model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)
     return model, transform
 
-def gazemoe_dinov2_vitl14_inout(num_experts, num_shared_experts, top_k, is_ffn_moe):
-    # origin backbone
-    backbone = DinoV2Backbone('dinov2_vitl14')
-    # TODO allow multi-scale backbone
-    #backbone = DinoV2BackboneMultiScale('dinov2_vitl14')
+def gazemoe_dinov2_vitl14_inout(num_experts, num_shared_experts, top_k, moe_type, is_msf):
+    if not is_msf:
+        # origin backbone
+        backbone = DinoV2Backbone('dinov2_vitl14')
+    else:
+        backbone = DinoV2BackboneMultiScale('dinov2_vitl14')
     transform = backbone.get_transform((448, 448))
     model = GazeMoE(backbone, inout=True, num_experts=num_experts, num_shared_experts=num_shared_experts,
-                    top_k=top_k, is_ffn_moe=is_ffn_moe)
+                    top_k=top_k, moe_type=moe_type, is_msf=is_msf)
     return model, transform
 
 def get_gazemoe_model(configuration):
@@ -629,5 +653,6 @@ def get_gazemoe_model(configuration):
         num_experts=configuration['model']['num_experts'],
         num_shared_experts=configuration['model']['num_shared_experts'],
         top_k=configuration['model']['top_k'],
-        is_ffn_moe=configuration['model']['is_ffn_moe']
+        moe_type=configuration['model']['moe_type'],
+        is_msf=configuration['model']['is_msf'],
     )

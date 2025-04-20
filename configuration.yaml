@@ -2,10 +2,11 @@
 model:
   name: "gazemoe_dinov2_vitl14_inout"  # "gazelle_dinov2_vitl14_inout"
   pretrained_path: "gazelle_dinov2_vitl14_inout.pt"  #"best_shared_epoch_4.pt"
-  num_experts: 6
+  num_experts: 4  # Routed experts
   num_shared_experts: 2
   top_k: 2
-  is_ffn_moe: 1
+  moe_type: "moe"  # vanilla / shared / else
+  is_msf: 1
   bce_weight: 1.0
   mse_weight: 180.0
   angle_weight: 0.5
@@ -47,7 +48,7 @@ train:
   gradient_clipping: 5.0            # Gradient clipping threshold
   # GazeFollow pretrain params
   pre_lr: 0.01
-  pre_batch_size: 24   # 60
+  pre_batch_size: 48   # 60
   pre_epochs: 12   # 15
   pre_optimizer: "Adam"
   pre_lr_scheduler:
