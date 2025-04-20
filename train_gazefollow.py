@@ -16,20 +16,10 @@ from tqdm import tqdm
 import yaml
 import random
 import wandb
-
 from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model, get_gazemoe_model
 import network.utils as utils
 from eval import eval_pretrain_gazefollow, gazefollow_auc, gazefollow_l2
-
-
-def load_data_vat(file, sample_rate):
-    sequences = json.load(open(file, "r"))
-    data = []
-    for i in range(len(sequences)):
-        for j in range(0, len(sequences[i]['frames']), sample_rate):
-            data.append(sequences[i]['frames'][j])
-    return data
 
 
 def load_data_gazefollow(file):
@@ -154,7 +144,7 @@ def main():
                                            shuffle=True,
                                            collate_fn=collate_fn,
                                            num_workers=3)
-    eval_dataset = GazeDataset('gazefollow', config['data']['pre_train_path'], 'test', transform)
+    eval_dataset = GazeDataset('gazefollow', config['data']['pre_test_path'], 'test', transform)
     eval_dl = torch.utils.data.DataLoader(eval_dataset,
                                           batch_size=config['train']['pre_batch_size'],
                                           shuffle=False,
@@ -192,8 +182,7 @@ def main():
         torch.save(model.get_gazelle_state_dict(), ckpt_path)
         print("Saved checkpoint to {}".format(ckpt_path))
 
-        # EVAL EPOCH
-        print("Running evaluation")
+        # EVAL
         model.eval()
         avg_l2s = []
         min_l2s = []
