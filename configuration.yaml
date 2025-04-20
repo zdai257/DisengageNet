@@ -11,7 +11,7 @@ model:
   mse_weight: 180.0
   angle_weight: 0.5
   vec_weight: 0.0
-  pbce_loss: "mse"  #"mse" or "bce"
+  pbce_loss: "bce"  #"mse" or "bce"
   reduction: "none"  #"mean" or "none"
   encoder:
     type: "DINOv2"                  # Pretrained image encoder (DINOv2, CLIP, etc.)
@@ -70,7 +70,7 @@ inference:
 
 logging:
   log_dir: "results/moe/"   # auto naming
-  pre_dir: "results/pretrainGF/"
+  pre_dir: "results/pretrainMoE/"
   save_every: 5
 
 hardware:

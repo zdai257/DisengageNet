@@ -22,6 +22,15 @@ import network.utils as utils
 from eval import eval_pretrain_gazefollow, gazefollow_auc, gazefollow_l2
 
 
+def load_data_vat(file, sample_rate):
+    sequences = json.load(open(file, "r"))
+    data = []
+    for i in range(len(sequences)):
+        for j in range(0, len(sequences[i]['frames']), sample_rate):
+            data.append(sequences[i]['frames'][j])
+    return data
+
+
 def load_data_gazefollow(file):
     data = json.load(open(file, "r"))
     return data
@@ -131,7 +140,7 @@ def main():
     exp_dir = os.path.join(config['logging']['pre_dir'], checkpoint_dir)
     os.makedirs(exp_dir, exist_ok=True)
 
-    model, transform = get_gazelle_model(config)
+    model, transform = get_gazemoe_model(config)
     model.to(device)
 
     for param in model.backbone.parameters(): # freeze backbone
