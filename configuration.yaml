@@ -47,9 +47,9 @@ train:
     min_lr: 1e-6                    # Minimum learning rate for cosine/other schedulers
   gradient_clipping: 5.0            # Gradient clipping threshold
   # GazeFollow pretrain params
-  pre_lr: 0.01
+  pre_lr: 0.001
   pre_batch_size: 48   # 60
-  pre_epochs: 12   # 15
+  pre_epochs: 15   # 15
   pre_optimizer: "Adam"
   pre_lr_scheduler:
     type: "cosine"                  # cosine / linear
@@ -74,6 +74,6 @@ logging:
   save_every: 5
 
 hardware:
-  device: "cuda:4"                    # Device to use (cuda, cpu)
+  device: "cuda:5"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading

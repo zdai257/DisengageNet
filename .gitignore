@@ -1,5 +1,6 @@
 __pycache__/
 .DS_Store
+wandb/
 .idea
 *.pt
 output*/
