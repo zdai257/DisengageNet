@@ -1,5 +1,3 @@
-import argparse
-from datetime import datetime
 import numpy as np
 import os
 from os.path import join
@@ -87,7 +85,7 @@ def main():
                                            num_workers=3)
     # Note this eval dataloader samples frames sparsely for efficiency - for final results, run eval_vat.py which uses sample rate 1
     eval_dataset = GazeDataset('videoattentiontarget', config['data']['test_path'], 'test', transform,
-                               in_frame_only=False, sample_rate=6)
+                               in_frame_only=False, sample_rate=6)  # sample_rate=6 / 1
     eval_dl = torch.utils.data.DataLoader(eval_dataset,
                                           batch_size=config['train']['batch_size'],
                                           shuffle=False,

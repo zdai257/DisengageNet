@@ -1,10 +1,8 @@
-import argparse
 import torch
 import torch.nn.functional as F
 from torch.optim import RMSprop, Adam, AdamW
 from torch.optim.lr_scheduler import StepLR
 from torchvision import transforms
-from torchvision.transforms import Compose, ToTensor
 import torchvision.transforms.functional as TF
 from PIL import Image
 import json
@@ -121,6 +119,7 @@ def main():
 
     # enforce model_name as GazeFollow dataset has no INOUT branch!
     config['model']['name'] = "gazelle_dinov2_vitl14"
+    #config['model']['name'] = "gazemoe_dinov2_vitl14_inout"
 
     wandb.init(
         project="my_gazelle",
@@ -143,7 +142,7 @@ def main():
     model, transform = get_gazemoe_model(config)
     model.to(device)
 
-    for param in model.backbone.parameters(): # freeze backbone
+    for param in model.backbone.parameters():  # freeze backbone
         param.requires_grad = False
     print(f"Learnable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
@@ -170,7 +169,7 @@ def main():
     for epoch in range(config['train']['pre_epochs']):
         # TRAIN EPOCH
         model.train()
-        for cur_iter, batch in enumerate(train_dl):
+        for cur_iter, batch in tqdm(enumerate(train_dl), total=len(train_dl)):
             imgs, bboxes, gazex, gazey, inout, heights, widths, heatmaps = batch
 
             optimizer.zero_grad()
@@ -183,7 +182,7 @@ def main():
 
             if cur_iter % config['logging']['save_every'] == 0:
                 wandb.log({"train/loss": loss.item()})
-                print("TRAIN EPOCH {}, iter {}/{}, loss={}".format(epoch, cur_iter, len(train_dl), round(loss.item(), 4)))
+                #print("TRAIN EPOCH {}, iter {}/{}, loss={}".format(epoch, cur_iter, len(train_dl), round(loss.item(), 4)))
 
         scheduler.step()
 
@@ -196,7 +195,7 @@ def main():
         avg_l2s = []
         min_l2s = []
         aucs = []
-        for cur_iter, batch in enumerate(eval_dl):
+        for cur_iter, batch in tqdm(enumerate(eval_dl), total=len(eval_dl)):
             imgs, bboxes, gazex, gazey, inout, heights, widths = batch
 
             with torch.no_grad():
