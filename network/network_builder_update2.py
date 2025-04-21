@@ -423,7 +423,7 @@ class MoEBlock(Block):
 
 class GazeMoE(nn.Module):
     def __init__(self, backbone, inout=False, dim=256, num_layers=3, in_size=(448, 448), out_size=(64, 64),
-                 num_experts=8, num_shared_experts=2, top_k=2, moe_type="vanilla", is_msf=False):
+                 num_experts=8, num_shared_experts=2, top_k=2, dropout=0.1, moe_type="vanilla", is_msf=False):
         super().__init__()
         self.backbone = backbone
         self.dim = dim
@@ -452,12 +452,12 @@ class GazeMoE(nn.Module):
 
         if moe_type == "vanilla":
             self.transformer = nn.Sequential(*[
-                Block(dim=self.dim, num_heads=8, mlp_ratio=4, drop_path=0.1)
+                Block(dim=self.dim, num_heads=8, mlp_ratio=4, drop_path=dropout)
                 for _ in range(num_layers)
             ])
         elif moe_type == "shared":
             # Create one vanilla block and share it across num_layers iterations.
-            vanilla_block = Block(dim=self.dim, num_heads=8, mlp_ratio=4, drop_path=0.1)
+            vanilla_block = Block(dim=self.dim, num_heads=8, mlp_ratio=4, drop_path=dropout)
             self.transformer = SharedTransformer(vanilla_block, num_layers)
         else:
             # Create Transformer blocks with MoE
@@ -466,7 +466,7 @@ class GazeMoE(nn.Module):
                     dim=self.dim,
                     num_heads=8,
                     mlp_ratio=4,
-                    drop_path=0.1,
+                    drop_path=dropout,
                     num_experts=self.num_experts,
                     num_shared_experts=self.num_shared_experts,
                     top_k=self.top_k
@@ -633,15 +633,15 @@ def gazelle_dinov2_vitl14_inout(transformer_type="shared"):  # performer / vanil
     model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)
     return model, transform
 
-def gazemoe_dinov2_vitl14_inout(num_experts, num_shared_experts, top_k, moe_type, is_msf):
+def gazemoe_dinov2_vitl14_inout(d_model, num_layers, num_experts, num_shared_experts, top_k, dropout, moe_type, is_msf):
     if not is_msf:
         # origin backbone
         backbone = DinoV2Backbone('dinov2_vitl14')
     else:
         backbone = DinoV2BackboneMultiScale('dinov2_vitl14')
     transform = backbone.get_transform((448, 448))
-    model = GazeMoE(backbone, inout=True, num_experts=num_experts, num_shared_experts=num_shared_experts,
-                    top_k=top_k, moe_type=moe_type, is_msf=is_msf)
+    model = GazeMoE(backbone, inout=True, dim=d_model, num_layers=num_layers, num_experts=num_experts,
+                    num_shared_experts=num_shared_experts, top_k=top_k, dropout=dropout, moe_type=moe_type, is_msf=is_msf)
     return model, transform
 
 def get_gazemoe_model(configuration):
@@ -650,9 +650,12 @@ def get_gazemoe_model(configuration):
     }
     assert configuration['model']['name'] in factory.keys(), "invalid model name"
     return factory[configuration['model']['name']](
+        d_model=configuration['model']['decoder']['hidden_size'],
+        num_layers=configuration['model']['decoder']['depth'],
         num_experts=configuration['model']['num_experts'],
         num_shared_experts=configuration['model']['num_shared_experts'],
         top_k=configuration['model']['top_k'],
+        dropout=configuration['model']['decoder']['dropout'],
         moe_type=configuration['model']['moe_type'],
         is_msf=configuration['model']['is_msf'],
     )

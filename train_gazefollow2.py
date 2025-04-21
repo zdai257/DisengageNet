@@ -391,7 +391,7 @@ def main():
         str(config['model']['angle_weight'])
     ])
     os.makedirs(os.path.join(config['logging']['pre_dir'], checkpoint_dir), exist_ok=True)
-    print("Pretrained checkpoint saved at: ", os.path.join(config['logging']['log_dir'], checkpoint_dir))
+    print("Pretrained checkpoint saved at: ", os.path.join(config['logging']['pre_dir'], checkpoint_dir))
     # START TRAINING
     for epoch in range(config['train']['pre_epochs']):
         model.train(True)

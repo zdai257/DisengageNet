@@ -39,38 +39,52 @@ def main():
     print("Running on {}".format(device))
 
     # enforce model_name for VAT with INOUT branch!
-    config['model']['name'] = "gazelle_dinov2_vitl14_inout"
+    #config['model']['name'] = "gazelle_dinov2_vitl14_inout"
+    # if using GazeMoE model
+    config['model']['name'] = "gazemoe_dinov2_vitl14_inout"
 
     wandb.init(
-        project="gazelle",
-        name="train_videoattentiontarget",
+        project=config['model']['name'],
+        name="train_vat",
         config=config
     )
 
     checkpoint_dir = "_".join([
+        "VAT",
+        config['model']['name'],
+        config['model']['moe_type'],
+        config['model']['is_msf'],
         config['train']['optimizer'],
         "bs" + str(config['train']['batch_size']),
-        str(config['train']['lr']),
-        str(config['train']['inout_lr']),
         config['model']['pbce_loss'],
-        str(config['model']['bce_weight']),
-        str(config['model']['mse_weight']),
-        str(config['model']['angle_weight']),
-        str(config['model']['vec_weight'])
+        str(config['train']['lr']),
+        str(config['train']['fuse_lr']),
+        str(config['train']['block_lr']),
+        str(config['train']['inout_lr']),
     ])
     exp_dir = os.path.join(config['logging']['log_dir'], checkpoint_dir)
     os.makedirs(exp_dir, exist_ok=True)
+    print("VAT checkpoint saved at: ", exp_dir)
 
     # load pretrained model
     model, transform = get_gazelle_model(config)
-    print("Initializing from {}".format(config['model']['pretrained_path']))
+    #model, transform = get_gazemoe_model(config)
+    print("Loading model from {}".format(config['model']['pretrained_path']))
 
-    # initializing from ckpt without inout head
+    ### initializing from ckpt without inout head ###
     model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True))
     ### if loading model incl. backbone ###
     #model.load_gazelle_state_dict(
     #    torch.load(config['model']['pretrained_path'], weights_only=True, map_location=device), include_backbone=False)
     model.to(device)
+
+    for name, param in model.named_parameters():  # Randomly initialize learnable parameters
+        break
+        if param.requires_grad:  # Only initialize unfrozen parameters
+            if param.dim() > 1:  # Weights
+                torch.nn.init.xavier_normal_(param)
+            else:  # Biases
+                torch.nn.init.zeros_(param)
 
     for param in model.backbone.parameters():  # freeze backbone
         param.requires_grad = False
@@ -82,7 +96,8 @@ def main():
                                            batch_size=config['train']['batch_size'],
                                            shuffle=True,
                                            collate_fn=collate_fn,
-                                           num_workers=3)
+                                           num_workers=config['hardware']['num_workers'])
+
     # Note this eval dataloader samples frames sparsely for efficiency - for final results, run eval_vat.py which uses sample rate 1
     eval_dataset = GazeDataset('videoattentiontarget', config['data']['test_path'], 'test', transform,
                                in_frame_only=False, sample_rate=6)  # sample_rate=6 / 1
@@ -90,18 +105,37 @@ def main():
                                           batch_size=config['train']['batch_size'],
                                           shuffle=False,
                                           collate_fn=collate_fn,
-                                          num_workers=3)
+                                          num_workers=config['hardware']['num_workers'])
 
-    heatmap_loss_fn = nn.BCELoss()
+    param_dicts = []
+    for n, p in model.named_parameters():
+        if p.requires_grad:
+            if 'ms_fusion' in n or 'linear' in n:
+                param_dicts.append({'params': p, 'lr': config['train']['fuse_lr']})
+            elif 'transformer' in n:
+                param_dicts.append({'params': p, 'lr': config['train']['block_lr']})
+            elif 'inout' in n:
+                param_dicts.append({'params': p, 'lr': config['train']['inout_lr']})
+            else:  # heatmap head params
+                param_dicts.append({'params': p, 'lr': config['train']['lr']})
+
+    if config['train']['pre_optimizer'] == 'Adam':
+        optimizer = Adam(param_dicts)
+    elif config['train']['pre_optimizer'] == 'AdamW':
+        optimizer = AdamW(param_dicts)
+    else:
+        raise TypeError("Optimizer not supported!")
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
+                                                           T_max=config['train']['lr_scheduler']['step_size'],
+                                                           eta_min=config['train']['lr_scheduler']['min_lr'])
+
+    # MSEloss or BCELoss
+    if config['model']['pbce_loss'] == "mse":
+        heatmap_loss_fn = torch.nn.MSELoss(reduction=config['model']['reduction'])
+    elif config['model']['pbce_loss'] == "bce":
+        heatmap_loss_fn = torch.nn.BCELoss()
     inout_loss_fn = nn.BCELoss()
-
-    param_groups = [
-        {'params': [param for name, param in model.named_parameters() if "inout" in name], 'lr': config['train']['lr']},
-        {'params': [param for name, param in model.named_parameters() if "inout" not in name], 'lr': config['train']['inout_lr']}
-    ]
-    optimizer = torch.optim.Adam(param_groups)
-
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=15, eta_min=1e-7)
 
     for epoch in range(config['train']['epochs']):
         # TRAIN EPOCH

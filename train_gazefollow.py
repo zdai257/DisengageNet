@@ -83,6 +83,7 @@ class GazeDataset(torch.utils.data.dataset.Dataset):
                 img, bbox, gazex, gazey = utils.horiz_flip(img, bbox, gazex, gazey, inout)
             if np.random.sample() <= 0.5:
                 bbox = utils.random_bbox_jitter(img, bbox)
+            # TODO more augmentations
 
             # update width and height and re-normalize
             width, height = img.size
@@ -92,9 +93,8 @@ class GazeDataset(torch.utils.data.dataset.Dataset):
 
         img = self.transform(img)
 
-        if self.split == "train":
-            heatmap = utils.get_heatmap(gazex_norm[0], gazey_norm[0], 64,
-                                        64)  # note for training set, there is only one annotation
+        if self.split == "train":  # note for training set, there is only one annotation
+            heatmap = utils.get_heatmap(gazex_norm[0], gazey_norm[0], 64, 64)
             return img, bbox_norm, gazex_norm, gazey_norm, torch.tensor(inout), height, width, heatmap
         else:
             return img, bbox_norm, gazex_norm, gazey_norm, torch.tensor(inout), height, width
@@ -118,29 +118,42 @@ def main():
     print("Running on {}".format(device))
 
     # enforce model_name as GazeFollow dataset has no INOUT branch!
-    config['model']['name'] = "gazelle_dinov2_vitl14"
-    #config['model']['name'] = "gazemoe_dinov2_vitl14_inout"
+    #config['model']['name'] = "gazelle_dinov2_vitl14"
+    # if using GazeMoE model
+    config['model']['name'] = "gazemoe_dinov2_vitl14_inout"
 
     wandb.init(
-        project="my_gazelle",
-        name="train_gazelle",
+        project=config['model']['name'],
+        name="train_gazemoe",
         config=config
     )
 
     checkpoint_dir = "_".join([
+        config['model']['name'],
+        config['model']['moe_type'],
+        config['model']['is_msf'],
         config['train']['pre_optimizer'],
         "bs" + str(config['train']['pre_batch_size']),
-        str(config['train']['pre_lr']),
-        str(config['train']['fuse_lr']),
         config['model']['pbce_loss'],
-        str(config['model']['mse_weight']),
-        str(config['model']['angle_weight'])
+        str(config['train']['pre_lr']),
+        str(config['train']['pre_fuse_lr']),
+        str(config['train']['pre_block_lr']),
     ])
     exp_dir = os.path.join(config['logging']['pre_dir'], checkpoint_dir)
     os.makedirs(exp_dir, exist_ok=True)
+    print("Pretrained checkpoint saved at: ", exp_dir)
 
+    #model, transform = get_gazelle_model(config)
     model, transform = get_gazemoe_model(config)
     model.to(device)
+
+    for name, param in model.named_parameters():  # Randomly initialize learnable parameters
+        break
+        if param.requires_grad:  # Only initialize unfrozen parameters
+            if param.dim() > 1:  # Weights
+                torch.nn.init.xavier_normal_(param)
+            else:  # Biases
+                torch.nn.init.zeros_(param)
 
     for param in model.backbone.parameters():  # freeze backbone
         param.requires_grad = False
@@ -151,17 +164,40 @@ def main():
                                            batch_size=config['train']['pre_batch_size'],
                                            shuffle=True,
                                            collate_fn=collate_fn,
-                                           num_workers=3)
+                                           num_workers=config['hardware']['num_workers'])
     eval_dataset = GazeDataset('gazefollow', config['data']['pre_test_path'], 'test', transform)
     eval_dl = torch.utils.data.DataLoader(eval_dataset,
                                           batch_size=config['train']['pre_batch_size'],
                                           shuffle=False,
                                           collate_fn=collate_fn,
-                                          num_workers=3)
+                                          num_workers=config['hardware']['num_workers'])
 
-    loss_fn = torch.nn.BCELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['train']['pre_lr'])
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=15, eta_min=1e-7)
+    param_dicts = []
+    for n, p in model.named_parameters():
+        if p.requires_grad:
+            if 'ms_fusion' in n or 'linear' in n:
+                param_dicts.append({'params': p, 'lr': config['train']['pre_fuse_lr']})
+            elif 'transformer' in n:
+                param_dicts.append({'params': p, 'lr': config['train']['pre_block_lr']})
+            else:
+                param_dicts.append({'params': p, 'lr': config['train']['pre_lr']})
+
+    if config['train']['pre_optimizer'] == 'Adam':
+        optimizer = Adam(param_dicts)
+    elif config['train']['pre_optimizer'] == 'AdamW':
+        optimizer = AdamW(param_dicts)
+    else:
+        raise TypeError("Optimizer not supported!")
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
+                                                           T_max=config['train']['pre_lr_scheduler']['step_size'],
+                                                           eta_min=config['train']['pre_lr_scheduler']['min_lr'])
+
+    # MSEloss or BCELoss
+    if config['model']['pbce_loss'] == "mse":
+        loss_fn = torch.nn.MSELoss(reduction=config['model']['reduction'])
+    elif config['model']['pbce_loss'] == "bce":
+        loss_fn = torch.nn.BCELoss()
 
     best_min_l2 = 1.0
     best_epoch = None
