@@ -349,8 +349,9 @@ def random_crop(img, bbox, gazex, gazey, inout):
         xmax = random.randint(int(crop_reg_xmax), width)
         ymax = random.randint(int(crop_reg_ymax), height)
     except:
-        import pdb
-        pdb.set_trace()
+        return img, bbox, gazex, gazey
+        #import pdb
+        #pdb.set_trace()
 
     img = torchvision.transforms.functional.crop(img, ymin, xmin, ymax - ymin, xmax - xmin)
     bbox = [bbox_xmin - xmin, bbox_ymin - ymin, bbox_xmax - xmin, bbox_ymax - ymin]

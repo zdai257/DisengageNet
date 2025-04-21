@@ -9,6 +9,7 @@ from PIL import Image
 from sklearn.metrics import average_precision_score
 import torch
 import torch.nn as nn
+from torch.optim import RMSprop, Adam, AdamW
 import wandb
 from tqdm import tqdm
 from network.network_builder import get_gazelle_model
@@ -53,7 +54,7 @@ def main():
         "VAT",
         config['model']['name'],
         config['model']['moe_type'],
-        config['model']['is_msf'],
+        str(config['model']['is_msf']),
         config['train']['optimizer'],
         "bs" + str(config['train']['batch_size']),
         config['model']['pbce_loss'],
@@ -128,7 +129,7 @@ def main():
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
                                                            T_max=config['train']['lr_scheduler']['step_size'],
-                                                           eta_min=config['train']['lr_scheduler']['min_lr'])
+                                                           eta_min=float(config['train']['lr_scheduler']['min_lr']))
 
     # MSEloss or BCELoss
     if config['model']['pbce_loss'] == "mse":

@@ -32,7 +32,7 @@ data:
 
 train:
   batch_size: 32                    # Batch size for training
-  epochs: 10                    # Number of training epochs
+  epochs: 15                    # Number of training epochs
   lr: 0.00001                         # 0.00001
   inout_lr: 0.01
   fuse_lr: 0.00001
@@ -72,6 +72,6 @@ logging:
   save_every: 5
 
 hardware:
-  device: "cuda:4"                    # Device to use (cuda, cpu)
+  device: "cuda:5"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading

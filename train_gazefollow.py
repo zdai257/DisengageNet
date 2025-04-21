@@ -34,6 +34,21 @@ def load_data_gazefollow(file):
     return data
 
 
+# combine Mean Squared Error (MSE) with KL Divergence to ensure smooth heatmap predictions
+def heatmap_kl_loss(pred, target):
+    mse = torch.nn.MSELoss()(pred, target)
+    kl = torch.nn.KLDivLoss(reduction="batchmean")(pred.log(), target)
+    return mse + 0.1 * kl
+
+
+# For in/out, use focal loss to handle class imbalance
+def focal_loss(pred, target, alpha=0.25, gamma=2):
+    bce = torch.nn.BCELoss(reduction="none")(pred, target)
+    pt = torch.exp(-bce)
+    focal = alpha * (1 - pt) ** gamma * bce
+    return focal.mean()
+
+
 class GazeDataset(torch.utils.data.dataset.Dataset):
     def __init__(self, dataset_name, path, split, transform, in_frame_only=True, sample_rate=1):
         self.dataset_name = dataset_name
@@ -131,7 +146,7 @@ def main():
     checkpoint_dir = "_".join([
         config['model']['name'],
         config['model']['moe_type'],
-        config['model']['is_msf'],
+        str(config['model']['is_msf']),
         config['train']['pre_optimizer'],
         "bs" + str(config['train']['pre_batch_size']),
         config['model']['pbce_loss'],
@@ -191,7 +206,7 @@ def main():
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
                                                            T_max=config['train']['pre_lr_scheduler']['step_size'],
-                                                           eta_min=config['train']['pre_lr_scheduler']['min_lr'])
+                                                           eta_min=float(config['train']['pre_lr_scheduler']['min_lr']))
 
     # MSEloss or BCELoss
     if config['model']['pbce_loss'] == "mse":

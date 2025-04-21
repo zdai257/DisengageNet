@@ -478,6 +478,16 @@ class GazeMoE(nn.Module):
             nn.Conv2d(dim, 1, kernel_size=1, bias=False),
             nn.Sigmoid()
         )
+        # if using transformer-based up-sampling heatmap head
+        """
+        self.heatmap_head = nn.Sequential(
+            nn.Conv2d(dim, dim, 1),
+            Block(dim=dim, num_heads=8, mlp_ratio=4),
+            nn.Conv2d(dim, 1, 1),
+            nn.Sigmoid()
+        )
+        """
+
         self.head_token = nn.Embedding(1, self.dim)
         if self.inout:
             self.inout_head = nn.Sequential(
@@ -516,6 +526,12 @@ class GazeMoE(nn.Module):
             x = torch.cat([self.inout_token.weight.unsqueeze(dim=0).repeat(x.shape[0], 1, 1), x], dim=1)
 
         x = self.transformer(x)
+        # if using Residual connection:
+        """
+        x_residual = x
+        x = self.transformer(x)
+        x = x + x_residual
+        """
 
         if self.inout:
             inout_tokens = x[:, 0, :]
