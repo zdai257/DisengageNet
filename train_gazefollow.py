@@ -132,14 +132,9 @@ def main():
     device = config['hardware']['device'] if torch.cuda.is_available() else "cpu"
     print("Running on {}".format(device))
 
-    # enforce model_name as GazeFollow dataset has no INOUT branch!
-    #config['model']['name'] = "gazelle_dinov2_vitl14"
-    # if using GazeMoE model
-    config['model']['name'] = "gazemoe_dinov2_vitl14_inout"
-
     wandb.init(
         project=config['model']['name'],
-        name="train_gazemoe",
+        name="pretrain_gf",
         config=config
     )
 
@@ -208,11 +203,16 @@ def main():
                                                            T_max=config['train']['pre_lr_scheduler']['step_size'],
                                                            eta_min=float(config['train']['pre_lr_scheduler']['min_lr']))
 
+    ### Auxiliary Loss ###
+    angle_loss_fn = utils.CosineL1()
+    softArgmax_fn = utils.SoftArgmax2D()
     # MSEloss or BCELoss
     if config['model']['pbce_loss'] == "mse":
         loss_fn = torch.nn.MSELoss(reduction=config['model']['reduction'])
     elif config['model']['pbce_loss'] == "bce":
         loss_fn = torch.nn.BCELoss()
+    else:
+        raise TypeError("Loss not supported!")
 
     best_min_l2 = 1.0
     best_epoch = None
@@ -227,7 +227,16 @@ def main():
             preds = model({"images": imgs.to(device), "bboxes": [[bbox] for bbox in bboxes]})
             heatmap_preds = torch.stack(preds['heatmap']).squeeze(dim=1)
 
-            loss = loss_fn(heatmap_preds, heatmaps.to(device))
+            ### Introduce gaze angle L1 loss ###
+            pred_xys = softArgmax_fn(heatmap_preds)
+            gt_xys = [torch.tensor([gtx, gty], dtype=torch.float32) for gtx, gty in zip(gazex, gazey)]
+            gt_xys = torch.stack(gt_xys).squeeze(2)
+            bbox_ctrs = [torch.tensor([(bbx[0] + bbx[2]) / 2, (bbx[1] + bbx[3]) / 2], dtype=torch.float32) for bbx in bboxes]
+            bbox_ctrs = torch.stack(bbox_ctrs)
+            angle_loss = angle_loss_fn(pred_xys - bbox_ctrs.to(device),
+                                       gt_xys.to(device) - bbox_ctrs.to(device))
+            # heatmap-bce value: 0.04 ~ 0.1; cosine angle loss value: 0 ~ 2
+            loss = loss_fn(heatmap_preds, heatmaps.to(device)) + config['model']['angle_weight'] * angle_loss.mean()
             loss.backward()
             optimizer.step()
 

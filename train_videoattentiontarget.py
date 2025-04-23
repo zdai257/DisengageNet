@@ -39,11 +39,6 @@ def main():
     device = config['hardware']['device'] if torch.cuda.is_available() else "cpu"
     print("Running on {}".format(device))
 
-    # enforce model_name for VAT with INOUT branch!
-    #config['model']['name'] = "gazelle_dinov2_vitl14_inout"
-    # if using GazeMoE model
-    config['model']['name'] = "gazemoe_dinov2_vitl14_inout"
-
     wandb.init(
         project=config['model']['name'],
         name="train_vat",
@@ -68,8 +63,8 @@ def main():
     print("VAT checkpoint saved at: ", exp_dir)
 
     # load pretrained model
-    model, transform = get_gazelle_model(config)
-    #model, transform = get_gazemoe_model(config)
+    #model, transform = get_gazelle_model(config)
+    model, transform = get_gazemoe_model(config)
     print("Loading model from {}".format(config['model']['pretrained_path']))
 
     ### initializing from ckpt without inout head ###
@@ -101,7 +96,7 @@ def main():
 
     # Note this eval dataloader samples frames sparsely for efficiency - for final results, run eval_vat.py which uses sample rate 1
     eval_dataset = GazeDataset('videoattentiontarget', config['data']['test_path'], 'test', transform,
-                               in_frame_only=False, sample_rate=6)  # sample_rate=6 / 1
+                               in_frame_only=False, sample_rate=1)  # sample_rate=6 / 1
     eval_dl = torch.utils.data.DataLoader(eval_dataset,
                                           batch_size=config['train']['batch_size'],
                                           shuffle=False,
@@ -131,11 +126,16 @@ def main():
                                                            T_max=config['train']['lr_scheduler']['step_size'],
                                                            eta_min=float(config['train']['lr_scheduler']['min_lr']))
 
+    ### Auxiliary Loss ###
+    angle_loss_fn = utils.CosineL1()
+    softArgmax_fn = utils.SoftArgmax2D()
     # MSEloss or BCELoss
     if config['model']['pbce_loss'] == "mse":
         heatmap_loss_fn = torch.nn.MSELoss(reduction=config['model']['reduction'])
     elif config['model']['pbce_loss'] == "bce":
         heatmap_loss_fn = torch.nn.BCELoss()
+    else:
+        raise TypeError("Loss not supported!")
     inout_loss_fn = nn.BCELoss()
 
     for epoch in range(config['train']['epochs']):
@@ -153,7 +153,18 @@ def main():
             heatmap_loss = heatmap_loss_fn(heatmap_preds[inout.bool()], heatmaps[inout.bool()].to(device))
             inout_loss = inout_loss_fn(inout_preds, inout.float().to(device))
 
-            loss = heatmap_loss + config['model']['bce_weight'] * inout_loss
+            ### Introduce gaze angle L1 loss ###
+            pred_xys = softArgmax_fn(heatmap_preds)
+            gt_xys = [torch.tensor([gtx, gty], dtype=torch.float32) for gtx, gty in zip(gazex, gazey)]
+            gt_xys = torch.stack(gt_xys).squeeze(2)
+            bbox_ctrs = [torch.tensor([(bbx[0] + bbx[2]) / 2, (bbx[1] + bbx[3]) / 2], dtype=torch.float32) for bbx in bboxes]
+            bbox_ctrs = torch.stack(bbox_ctrs)
+            # compute angle loss only for in-frame gaze targets
+            pred_vec = pred_xys - bbox_ctrs.to(device)
+            gt_vec = gt_xys.to(device) - bbox_ctrs.to(device)
+            angle_loss = angle_loss_fn(pred_vec[inout.bool()], gt_vec[inout.bool()])
+
+            loss = heatmap_loss + config['model']['bce_weight'] * inout_loss + config['model']['angle_weight'] * angle_loss.mean()
             loss.backward()
             optimizer.step()
 

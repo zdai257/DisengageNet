@@ -1,15 +1,15 @@
 # General Configuration
 model:
-  name: "gazemoe_dinov2_vitl14_inout"  # "gazelle_dinov2_vitl14_inout"
-  pretrained_path: "gazelle_dinov2_vitl14_inout.pt"  # "gazelle_dinov2_vitl14_inout.pt"
+  name: "gazemoe_dinov2_vitl14_inout"  # "gazelle_dinov2_vitl14_inout" OR "gazemoe_dinov2_vitl14_inout"
+  pretrained_path: "results/"  # "gazelle_dinov2_vitl14_inout.pt"
   num_experts: 4  # Routed experts
   num_shared_experts: 2  # Shared experts
   top_k: 2
-  moe_type: "moe"  # vanilla / shared / else
+  moe_type: "shared"  # vanilla / shared / else
   is_msf: 1
   bce_weight: 1.0
   mse_weight: 180.0
-  angle_weight: 0.5
+  angle_weight: 0.1
   vec_weight: 0.0
   pbce_loss: "bce"  #"mse" or "bce"
   reduction: "mean"  #"mean" or "none"
@@ -31,10 +31,11 @@ data:
   augmentations: []
 
 train:
-  batch_size: 32                    # Batch size for training
-  epochs: 15                    # Number of training epochs
+  # VAT finetuning hyperparams
+  batch_size: 36                    # Batch size for training
+  epochs: 10                    # Number of training epochs
   lr: 0.00001                         # 0.00001
-  inout_lr: 0.01
+  inout_lr: 0.001
   fuse_lr: 0.00001
   block_lr: 0.00001
   layer_decay: 0                    # 0 or 1
@@ -46,11 +47,11 @@ train:
     gamma: 0.1                      # Decay factor for step/exponential scheduler
     min_lr: 1e-7                    # Minimum learning rate for cosine/other schedulers
   gradient_clipping: 5.0            # Gradient clipping threshold
-  # GazeFollow pretrain params
+  # GazeFollow pretrain hyperparams
   pre_lr: 0.001
   pre_fuse_lr: 0.001
   pre_block_lr: 0.001
-  pre_batch_size: 48   # 60
+  pre_batch_size: 60   # 60
   pre_epochs: 15   # 15
   pre_optimizer: "Adam"
   pre_lr_scheduler:
@@ -61,17 +62,17 @@ train:
 
 eval:
   checkpoint: ""                    # Path to the checkpoint for Eval
-  batch_size: 32                    # Batch size for evaluation
+  batch_size: 36                    # Batch size for evaluation
 
 inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/gazelle/"           # auto naming
+  log_dir: "results/GazeMoE/"           # auto naming
   pre_dir: "results/pretrainMoE/"
   save_every: 5
 
 hardware:
-  device: "cuda:5"                    # Device to use (cuda, cpu)
+  device: "cuda:4"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading
