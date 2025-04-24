@@ -206,8 +206,10 @@ def main():
     ### Auxiliary Loss ###
     angle_loss_fn = utils.CosineL1()
     softArgmax_fn = utils.SoftArgmax2D()
+    SCALAR = 1
     # MSEloss or BCELoss
     if config['model']['pbce_loss'] == "mse":
+        SCALAR = 36
         loss_fn = torch.nn.MSELoss(reduction=config['model']['reduction'])
     elif config['model']['pbce_loss'] == "bce":
         loss_fn = torch.nn.BCELoss()
@@ -236,7 +238,7 @@ def main():
             angle_loss = angle_loss_fn(pred_xys - bbox_ctrs.to(device),
                                        gt_xys.to(device) - bbox_ctrs.to(device))
             # heatmap-bce value: 0.04 ~ 0.1; cosine angle loss value: 0 ~ 2
-            loss = loss_fn(heatmap_preds, heatmaps.to(device)) + config['model']['angle_weight'] * angle_loss.mean()
+            loss = SCALAR * loss_fn(heatmap_preds, heatmaps.to(device)) + config['model']['angle_weight'] * angle_loss.mean()
             loss.backward()
             optimizer.step()
 

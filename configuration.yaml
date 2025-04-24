@@ -9,7 +9,7 @@ model:
   is_msf: 1
   bce_weight: 1.0
   mse_weight: 180.0
-  angle_weight: 0.1
+  angle_weight: 0.0
   vec_weight: 0.0
   pbce_loss: "bce"  #"mse" or "bce"
   reduction: "mean"  #"mean" or "none"
@@ -69,7 +69,7 @@ inference:
 
 logging:
   log_dir: "results/GazeMoE/"           # auto naming
-  pre_dir: "results/pretrainMoE/"
+  pre_dir: "results/pretrainShared/"
   save_every: 5
 
 hardware:
