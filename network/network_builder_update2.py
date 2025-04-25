@@ -449,6 +449,9 @@ class GazeMoE(nn.Module):
 
         self.register_buffer("pos_embed",
                              positionalencoding2d(self.dim, self.featmap_h, self.featmap_w).squeeze(dim=0).squeeze(dim=0))
+        # Learnable pos embed
+        #self.pos_embed = nn.Parameter(torch.randn(1, self.dim, self.featmap_h, self.featmap_w))
+        #nn.init.normal_(self.pos_embed, std=0.02)
 
         if moe_type == "vanilla":
             self.transformer = nn.Sequential(*[
