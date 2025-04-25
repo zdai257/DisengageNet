@@ -5,6 +5,7 @@ import json
 import yaml
 import random
 import copy
+from scipy.io import loadmat
 from PIL import Image
 from sklearn.metrics import average_precision_score
 import torch
@@ -17,20 +18,80 @@ from network.network_builder_update2 import get_gt360_model, get_gazemoe_model
 import network.utils as utils
 from train_gazefollow import GazeDataset, collate_fn
 from eval import vat_auc, vat_l2
-
-
-def load_data_vat(file, sample_rate):
-    sequences = json.load(open(file, "r"))
-    data = []
-    for i in range(len(sequences)):
-        for j in range(0, len(sequences[i]['frames']), sample_rate):
-            data.append(sequences[i]['frames'][j])
-    return data
+# TODO eval metric of sphere l2
 
 
 def load_data_gazefollow(file):
     data = json.load(open(file, "r"))
     return data
+
+
+class GF360Dataset(torch.utils.data.dataset.Dataset):
+    def __init__(self, dataset_name, path, split, transform, in_frame_only=True):
+        self.dataset_name = dataset_name
+        self.path = path
+        self.split = split
+        self.aug = self.split == "train"
+        self.transform = transform
+        self.in_frame_only = in_frame_only
+
+        if dataset_name == "gf360":
+            self.data = loadmat(join(path, "train_vali_test_data", self.split + "_data.mat"))
+        else:
+            raise ValueError("Invalid dataset: {}".format(dataset_name))
+
+        self.data_idxs = []
+        face_boxs = self.data['face_box']
+        paths = self.data['path']
+        gazes = self.data['gaze']
+        for i in range(len(self.data['gaze'])):
+            # for GazeFollow360 all samples are in_frame
+            self.data_idxs.append((i, paths[i], face_boxs[i], gazes[i]))
+            #print(gazes[i])
+
+    def __getitem__(self, idx):
+        img_idx, img_path, bbox, gaze = self.data_idxs[idx]
+
+        img_path = os.path.join(self.path, f'all the videos', img_path)
+        #print(img_path)
+        img = Image.open(img_path.rstrip())
+        img = img.convert("RGB")
+        width, height = img.size
+
+        bbox = [bbox[0,0], bbox[0,1], bbox[1,0], bbox[1,1]]
+        gazex, gazey = [round(gaze[0] * width)], [round(gaze[1] * height)]
+        
+        gazex_norm = [gaze[0]]
+        gazey_norm = [gaze[1]]
+
+        if self.aug:
+
+            if np.random.sample() <= 0.5:
+                img, bbox, gazex, gazey = utils.random_crop(img, bbox, gazex, gazey, 1)
+            if np.random.sample() <= 0.5:
+                img, bbox, gazex, gazey = utils.horiz_flip(img, bbox, gazex, gazey, 1)
+            if np.random.sample() <= 0.5:
+                bbox = utils.random_bbox_jitter(img, bbox)
+            # TODO more augmentations
+
+            # update width and height and re-normalize
+            width, height = img.size
+            bbox_norm = [bbox[0] / width, bbox[1] / height, bbox[2] / width, bbox[3] / height]
+            gazex_norm = [x / float(width) for x in gazex]
+            gazey_norm = [y / float(height) for y in gazey]
+        else:
+            bbox_norm = [bbox[0] / width, bbox[1] / height, bbox[2] / width, bbox[3] / height]
+
+        img = self.transform(img)
+
+        if self.split == "train":  # note for training set, there is only one annotation
+            heatmap = utils.get_heatmap(gazex_norm[0], gazey_norm[0], 64, 64)
+            return img, bbox_norm, gazex_norm, gazey_norm, torch.tensor(1), height, width, heatmap
+        else:
+            return img, bbox_norm, gazex_norm, gazey_norm, torch.tensor(1), height, width
+
+    def __len__(self):
+        return len(self.data_idxs)
 
 
 def main():
@@ -41,12 +102,12 @@ def main():
 
     wandb.init(
         project=config['model']['name'],
-        name="train_vat",
+        name="train_gf360",
         config=config
     )
 
     checkpoint_dir = "_".join([
-        "VAT",
+        "GF360",
         config['model']['name'],
         config['model']['moe_type'],
         str(config['model']['is_msf']),
@@ -56,11 +117,11 @@ def main():
         str(config['train']['lr']),
         str(config['train']['fuse_lr']),
         str(config['train']['block_lr']),
-        str(config['train']['inout_lr']),
+        #str(config['train']['inout_lr']),
     ])
     exp_dir = os.path.join(config['logging']['log_dir'], checkpoint_dir)
     os.makedirs(exp_dir, exist_ok=True)
-    print("VAT checkpoint saved at: ", exp_dir)
+    print("GF360 checkpoint saved at: ", exp_dir)
 
     # load pretrained model
     #model, transform = get_gazelle_model(config)
@@ -86,8 +147,7 @@ def main():
         param.requires_grad = False
     print(f"Learnable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
-    train_dataset = GazeDataset('videoattentiontarget', config['data']['train_path'], 'train', transform,
-                                in_frame_only=False, sample_rate=6)
+    train_dataset = GF360Dataset('gf360', 'GazeFollow360', 'train', transform, in_frame_only=True)
     train_dl = torch.utils.data.DataLoader(train_dataset,
                                            batch_size=config['train']['batch_size'],
                                            shuffle=True,
@@ -95,14 +155,14 @@ def main():
                                            num_workers=config['hardware']['num_workers'])
 
     # Note this eval dataloader samples frames sparsely for efficiency - for final results, run eval_vat.py which uses sample rate 1
-    eval_dataset = GazeDataset('videoattentiontarget', config['data']['test_path'], 'test', transform,
-                               in_frame_only=False, sample_rate=1)  # sample_rate=6 / 1
+    eval_dataset = GF360Dataset('gf360', 'GazeFollow360', 'test', transform, in_frame_only=True)
     eval_dl = torch.utils.data.DataLoader(eval_dataset,
                                           batch_size=config['train']['batch_size'],
                                           shuffle=False,
                                           collate_fn=collate_fn,
                                           num_workers=config['hardware']['num_workers'])
-
+    print(train_dataset.__len__(), eval_dataset.__len__())
+    
     param_dicts = []
     for n, p in model.named_parameters():
         if p.requires_grad:
@@ -189,8 +249,6 @@ def main():
         model.eval()
         l2s = []
         aucs = []
-        all_inout_preds = []
-        all_inout_gts = []
 
         for cur_iter, batch in tqdm(enumerate(eval_dl), total=len(eval_dl)):
             imgs, bboxes, gazex, gazey, inout, heights, widths = batch
@@ -206,18 +264,14 @@ def main():
                     l2 = vat_l2(heatmap_preds[i], gazex[i][0], gazey[i][0])
                     aucs.append(auc)
                     l2s.append(l2)
-                all_inout_preds.append(inout_preds[i].item())
-                all_inout_gts.append(inout[i])
 
         epoch_l2 = np.mean(l2s)
         epoch_auc = np.mean(aucs)
-        epoch_inout_ap = average_precision_score(all_inout_gts, all_inout_preds)
 
-        wandb.log({"eval/auc": epoch_auc, "eval/l2": epoch_l2, "eval/inout_ap": epoch_inout_ap, "epoch": epoch})
-        print("EVAL EPOCH {}: AUC={}, L2={}, Inout AP={}".format(epoch,
+        wandb.log({"eval/auc": epoch_auc, "eval/l2": epoch_l2, "epoch": epoch})
+        print("EVAL EPOCH {}: AUC={}, sphere_L2={}".format(epoch,
                                                                  round(float(epoch_auc), 4),
-                                                                 round(float(epoch_l2), 4),
-                                                                 round(float(epoch_inout_ap), 4)))
+                                                                 round(float(epoch_l2), 4)))
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 # General Configuration
 model:
   name: "gazemoe_dinov2_vitl14_inout"  # "gazelle_dinov2_vitl14_inout" OR "gazemoe_dinov2_vitl14_inout"
-  pretrained_path: "results/"  # "gazelle_dinov2_vitl14_inout.pt"
+  pretrained_path: "pretrainShared_epoch_14.pt"  # "gazelle_dinov2_vitl14_inout.pt"
   num_experts: 4  # Routed experts
   num_shared_experts: 2  # Shared experts
   top_k: 2
@@ -73,6 +73,6 @@ logging:
   save_every: 5
 
 hardware:
-  device: "cuda:4"                    # Device to use (cuda, cpu)
+  device: "cuda:0"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading
