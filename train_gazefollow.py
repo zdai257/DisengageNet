@@ -34,19 +34,29 @@ def load_data_gazefollow(file):
     return data
 
 
-# combine Mean Squared Error (MSE) with KL Divergence to ensure smooth heatmap predictions
-def heatmap_kl_loss(pred, target):
-    mse = torch.nn.MSELoss()(pred, target)
-    kl = torch.nn.KLDivLoss(reduction="batchmean")(pred.log(), target)
-    return mse + 0.1 * kl
+# combine BCE/MSE with KL Divergence Loss
+class HybridLoss(torch.nn.Module):
+    def __init__(self, bce_weight=1.0, mse_weight=0.0, kld_weight=0.1, kld_reduction='batchmean'):
+        super(HybridLoss, self).__init__()
+        self.bce_weight = bce_weight
+        self.mse_weight = mse_weight
+        self.kld_weight = kld_weight
+        self.kld_reduction = kld_reduction
+        self.bce_loss = torch.nn.BCELoss(reduction='mean')
+        self.mse_loss = torch.nn.MSELoss(reduction='mean')
+        self.kld_loss = torch.nn.KLDivLoss(reduction=kld_reduction)
 
-
-# For in/out, use focal loss to handle class imbalance
-def focal_loss(pred, target, alpha=0.25, gamma=2):
-    bce = torch.nn.BCELoss(reduction="none")(pred, target)
-    pt = torch.exp(-bce)
-    focal = alpha * (1 - pt) ** gamma * bce
-    return focal.mean()
+    def forward(self, pred, target):
+        loss = 0.0
+        if self.bce_weight > 0:
+            loss += self.bce_weight * self.bce_loss(pred, target)
+        if self.mse_weight > 0:
+            loss += self.mse_weight * self.mse_loss(pred, target)
+        if self.kld_weight > 0:
+            pred_dist = F.log_softmax(pred, dim=(2, 3))
+            target_dist = F.softmax(target, dim=(2, 3))
+            loss += self.kld_weight * self.kld_loss(pred_dist, target_dist)
+        return loss
 
 
 class GazeDataset(torch.utils.data.dataset.Dataset):
@@ -213,6 +223,8 @@ def main():
         loss_fn = torch.nn.MSELoss(reduction=config['model']['reduction'])
     elif config['model']['pbce_loss'] == "bce":
         loss_fn = torch.nn.BCELoss()
+    elif config['model']['pbce_loss'] == "hybrid":
+        loss_fn = HybridLoss(bce_weight=1.0, mse_weight=0.0, kld_weight=0.1)
     else:
         raise TypeError("Loss not supported!")
 

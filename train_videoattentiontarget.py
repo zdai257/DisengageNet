@@ -9,13 +9,14 @@ from PIL import Image
 from sklearn.metrics import average_precision_score
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import RMSprop, Adam, AdamW
 import wandb
 from tqdm import tqdm
 from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model, get_gazemoe_model
 import network.utils as utils
-from train_gazefollow import GazeDataset, collate_fn
+from train_gazefollow import GazeDataset, collate_fn, HybridLoss
 from eval import vat_auc, vat_l2
 
 
@@ -31,6 +32,40 @@ def load_data_vat(file, sample_rate):
 def load_data_gazefollow(file):
     data = json.load(open(file, "r"))
     return data
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.4/0.6, gamma=2.0, reduction='mean', apply_sigmoid=False):
+        """
+            alpha (float): Weighting factor for the minority class (e.g., 0.25 for imbalanced datasets).
+            gamma (float): Focusing parameter to down-weight easy examples (e.g., 2.0).
+        """
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.apply_sigmoid = apply_sigmoid
+
+    def forward(self, inputs, targets):
+        targets = targets.float()
+        # Apply sigmoid if inputs are logits
+        if self.apply_sigmoid:
+            probs = torch.sigmoid(inputs)
+        else:
+            probs = inputs
+        # Compute binary cross-entropy (without reduction)
+        bce = F.binary_cross_entropy(probs, targets, reduction='none')
+        # Compute pt = exp(-bce) = probability of true class
+        pt = torch.exp(-bce)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce
+
+        # Apply reduction
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:  # 'none'
+            return focal_loss
 
 
 def main():
@@ -136,9 +171,15 @@ def main():
         heatmap_loss_fn = torch.nn.MSELoss(reduction=config['model']['reduction'])
     elif config['model']['pbce_loss'] == "bce":
         heatmap_loss_fn = torch.nn.BCELoss()
+    elif config['model']['pbce_loss'] == "hybrid":
+        heatmap_loss_fn = HybridLoss(bce_weight=1.0, mse_weight=0.0, kld_weight=0.1)
     else:
         raise TypeError("Loss not supported!")
-    inout_loss_fn = nn.BCELoss()
+
+    if config['model']['is_focal_loss'] == 1:
+        inout_loss_fn = FocalLoss()
+    else:
+        inout_loss_fn = nn.BCELoss()
 
     for epoch in range(config['train']['epochs']):
         # TRAIN EPOCH

@@ -405,7 +405,7 @@ class MoELayer(nn.Module):
         output = output.view(*batch_shape, self.out_features)
         return output
 
-# Modified Transformer (ViT) Block with MoE
+
 class MoEBlock(Block):
     def __init__(self, dim, num_heads, mlp_ratio=4., drop_path=0.1, num_experts=8, num_shared_experts=2, top_k=2):
         super().__init__(dim, num_heads, mlp_ratio=mlp_ratio, drop_path=drop_path)
@@ -422,11 +422,12 @@ class MoEBlock(Block):
 
 
 class GazeMoE(nn.Module):
-    def __init__(self, backbone, inout=False, dim=256, num_layers=3, in_size=(448, 448), out_size=(64, 64),
-                 num_experts=8, num_shared_experts=2, top_k=2, dropout=0.1, moe_type="vanilla", is_msf=False):
+    def __init__(self, backbone, inout=False, dim=256, mlp_ratio=4, num_layers=3, in_size=(448, 448), out_size=(64, 64),
+                 num_experts=8, num_shared_experts=2, top_k=2, dropout=0.1, moe_type="vanilla", is_msf=False, is_hm_head_trans=False):
         super().__init__()
         self.backbone = backbone
         self.dim = dim
+        self.mlp_ratio = mlp_ratio
         self.num_layers = num_layers
         self.featmap_h, self.featmap_w = backbone.get_out_size(in_size)
         self.in_size = in_size
@@ -455,12 +456,12 @@ class GazeMoE(nn.Module):
 
         if moe_type == "vanilla":
             self.transformer = nn.Sequential(*[
-                Block(dim=self.dim, num_heads=8, mlp_ratio=4, drop_path=dropout)
+                Block(dim=self.dim, num_heads=8, mlp_ratio=self.mlp_ratio, drop_path=dropout)
                 for _ in range(num_layers)
             ])
         elif moe_type == "shared":
             # Create one vanilla block and share it across num_layers iterations.
-            vanilla_block = Block(dim=self.dim, num_heads=8, mlp_ratio=4, drop_path=dropout)
+            vanilla_block = Block(dim=self.dim, num_heads=8, mlp_ratio=self.mlp_ratio, drop_path=dropout)
             self.transformer = SharedTransformer(vanilla_block, num_layers)
         else:
             # Create Transformer blocks with MoE
@@ -468,7 +469,7 @@ class GazeMoE(nn.Module):
                 MoEBlock(
                     dim=self.dim,
                     num_heads=8,
-                    mlp_ratio=4,
+                    mlp_ratio=self.mlp_ratio,
                     drop_path=dropout,
                     num_experts=self.num_experts,
                     num_shared_experts=self.num_shared_experts,
@@ -476,20 +477,20 @@ class GazeMoE(nn.Module):
                 ) for _ in range(num_layers)
             ])
 
-        self.heatmap_head = nn.Sequential(
-            nn.ConvTranspose2d(dim, dim, kernel_size=2, stride=2),
-            nn.Conv2d(dim, 1, kernel_size=1, bias=False),
-            nn.Sigmoid()
-        )
-        # if using transformer-based up-sampling heatmap head
-        """
-        self.heatmap_head = nn.Sequential(
-            nn.Conv2d(dim, dim, 1),
-            Block(dim=dim, num_heads=8, mlp_ratio=4),
-            nn.Conv2d(dim, 1, 1),
-            nn.Sigmoid()
-        )
-        """
+        if not is_hm_head_trans:
+            self.heatmap_head = nn.Sequential(
+                nn.ConvTranspose2d(dim, dim, kernel_size=2, stride=2),
+                nn.Conv2d(dim, 1, kernel_size=1, bias=False),
+                nn.Sigmoid()
+            )
+        else:
+            # if using transformer-based up-sampling heatmap head
+            self.heatmap_head = nn.Sequential(
+                nn.Conv2d(dim, dim, 1),
+                Block(dim=dim, num_heads=8, mlp_ratio=4, drop_path=dropout),
+                nn.Conv2d(dim, 1, 1),
+                nn.Sigmoid()
+            )
 
         self.head_token = nn.Embedding(1, self.dim)
         if self.inout:
@@ -500,6 +501,7 @@ class GazeMoE(nn.Module):
                 nn.Linear(128, 1),
                 nn.Sigmoid()
             )
+            # MoE here Overkill for Binary Classification
             """
             self.inout_head = nn.Sequential(
                 MoELayer(self.dim, 128, num_experts=self.num_experts, top_k=self.top_k),
@@ -652,15 +654,17 @@ def gazelle_dinov2_vitl14_inout(transformer_type="shared"):  # performer / vanil
     model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)
     return model, transform
 
-def gazemoe_dinov2_vitl14_inout(d_model, num_layers, num_experts, num_shared_experts, top_k, dropout, moe_type, is_msf):
+def gazemoe_dinov2_vitl14_inout(d_model, mlp_ratio, num_layers, num_experts, num_shared_experts, top_k, dropout,
+                                moe_type, is_msf, is_hm_head_trans):
     if not is_msf:
         # origin backbone
         backbone = DinoV2Backbone('dinov2_vitl14')
     else:
         backbone = DinoV2BackboneMultiScale('dinov2_vitl14')
     transform = backbone.get_transform((448, 448))
-    model = GazeMoE(backbone, inout=True, dim=d_model, num_layers=num_layers, num_experts=num_experts,
-                    num_shared_experts=num_shared_experts, top_k=top_k, dropout=dropout, moe_type=moe_type, is_msf=is_msf)
+    model = GazeMoE(backbone, inout=True, dim=d_model, mlp_ratio=mlp_ratio, num_layers=num_layers, num_experts=num_experts,
+                    num_shared_experts=num_shared_experts, top_k=top_k, dropout=dropout,
+                    moe_type=moe_type, is_msf=is_msf, is_hm_head_trans=is_hm_head_trans)
     return model, transform
 
 def get_gazemoe_model(configuration):
@@ -670,6 +674,7 @@ def get_gazemoe_model(configuration):
     assert configuration['model']['name'] in factory.keys(), "invalid model name"
     return factory[configuration['model']['name']](
         d_model=configuration['model']['decoder']['hidden_size'],
+        mlp_ratio=configuration['model']['decoder']['mlp_ratio'],
         num_layers=configuration['model']['decoder']['depth'],
         num_experts=configuration['model']['num_experts'],
         num_shared_experts=configuration['model']['num_shared_experts'],
@@ -677,4 +682,5 @@ def get_gazemoe_model(configuration):
         dropout=configuration['model']['decoder']['dropout'],
         moe_type=configuration['model']['moe_type'],
         is_msf=configuration['model']['is_msf'],
+        is_hm_head_trans=configuration['model']['is_hm_head_trans'],
     )

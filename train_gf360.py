@@ -16,7 +16,7 @@ from tqdm import tqdm
 from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model, get_gazemoe_model
 import network.utils as utils
-from train_gazefollow import GazeDataset, collate_fn
+from train_gazefollow import GazeDataset, collate_fn, HybridLoss
 from eval import vat_auc, vat_l2
 # TODO eval metric of sphere l2
 
@@ -196,6 +196,8 @@ def main():
         heatmap_loss_fn = torch.nn.MSELoss(reduction=config['model']['reduction'])
     elif config['model']['pbce_loss'] == "bce":
         heatmap_loss_fn = torch.nn.BCELoss()
+    elif config['model']['pbce_loss'] == "hybrid":
+        heatmap_loss_fn = HybridLoss(bce_weight=1.0, mse_weight=0.0, kld_weight=0.1)
     else:
         raise TypeError("Loss not supported!")
     inout_loss_fn = nn.BCELoss()

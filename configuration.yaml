@@ -2,17 +2,20 @@
 model:
   name: "gazemoe_dinov2_vitl14_inout"  # "gazelle_dinov2_vitl14_inout" OR "gazemoe_dinov2_vitl14_inout"
   pretrained_path: "pretrainShared_epoch_14.pt"  # "gazelle_dinov2_vitl14_inout.pt"
-  num_experts: 4  # Routed experts
-  num_shared_experts: 2  # Shared experts
-  top_k: 2
-  moe_type: "shared"  # vanilla / shared / else
+  mlp_ratio: 2  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size 4->2
+  num_experts: 4  # Routed experts 8->4
+  num_shared_experts: 1  # Shared experts 2->1
+  top_k: 2  # 2 / 1
+  moe_type: "shared"  # vanilla / shared / else (moe)
   is_msf: 1
+  is_hm_head_trans: 1
+  is_focal_loss: 1  # if using FocalLoss for class balancing
+  pbce_loss: "bce"  #"mse" or "bce" or "hybrid"
+  reduction: "mean"  #"mean" or "none"
   bce_weight: 1.0
   mse_weight: 180.0
   angle_weight: 0.0
   vec_weight: 0.0
-  pbce_loss: "bce"  #"mse" or "bce"
-  reduction: "mean"  #"mean" or "none"
   encoder:
     type: "DINOv2"                  # Pretrained image encoder (DINOv2, CLIP, etc.)
     pretrained: true                # Use pretrained weights
