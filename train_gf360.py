@@ -17,8 +17,7 @@ from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model, get_gazemoe_model
 import network.utils as utils
 from train_gazefollow import GazeDataset, collate_fn, HybridLoss
-from eval import vat_auc, vat_l2
-# TODO eval metric of sphere l2
+from eval import vat_auc, vat_l2, spherical_distance
 
 
 def load_data_gazefollow(file):
@@ -249,7 +248,7 @@ def main():
 
         # EVAL
         model.eval()
-        l2s = []
+        spherical_l2s = []
         aucs = []
 
         for cur_iter, batch in tqdm(enumerate(eval_dl), total=len(eval_dl)):
@@ -263,17 +262,18 @@ def main():
             for i in range(heatmap_preds.shape[0]):
                 if inout[i] == 1: # in-frame
                     auc = vat_auc(heatmap_preds[i], gazex[i][0], gazey[i][0])
-                    l2 = vat_l2(heatmap_preds[i], gazex[i][0], gazey[i][0])
+                    #l2 = vat_l2(heatmap_preds[i], gazex[i][0], gazey[i][0])
+                    spherical_l2 = spherical_distance(heatmap_preds[i], gazex[i][0], gazey[i][0])
                     aucs.append(auc)
-                    l2s.append(l2)
+                    spherical_l2s.append(spherical_l2)
 
-        epoch_l2 = np.mean(l2s)
+        epoch_spherical_l2 = np.mean(spherical_l2s)
         epoch_auc = np.mean(aucs)
 
-        wandb.log({"eval/auc": epoch_auc, "eval/l2": epoch_l2, "epoch": epoch})
+        wandb.log({"eval/auc": epoch_auc, "eval/spherical_l2": epoch_spherical_l2, "epoch": epoch})
         print("EVAL EPOCH {}: AUC={}, sphere_L2={}".format(epoch,
-                                                                 round(float(epoch_auc), 4),
-                                                                 round(float(epoch_l2), 4)))
+                                                           round(float(epoch_auc), 4),
+                                                           round(float(epoch_spherical_l2), 4)))
 
 
 if __name__ == '__main__':

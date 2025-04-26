@@ -11,7 +11,7 @@ from network.network_builder_update2 import get_gt360_model
 from tqdm import tqdm
 import yaml
 from sklearn.metrics import roc_auc_score, average_precision_score
-
+import math
 import matplotlib.pyplot as plt
 from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3
 
@@ -81,6 +81,36 @@ def vat_l2(heatmap, gt_gazex, gt_gazey):
     l2 = np.sqrt((pred_x - gt_gazex) ** 2 + (pred_y - gt_gazey) ** 2)
 
     return l2
+
+
+def spherical_distance(heatmap, gazex, gazey):
+    argmax = heatmap.flatten().argmax().item()
+    pred_y, pred_x = np.unravel_index(argmax, (64, 64))
+    pred_x = pred_x / 64.
+    pred_y = pred_y / 64.
+
+    pi = math.pi
+    qC = (
+        math.sin(pi * pred_y) * math.cos(2 * pi * pred_x),
+        -math.sin(pi * pred_y) * math.sin(2 * pi * pred_x),
+        math.cos(pi * pred_y)
+    )
+    qC_hat = (
+        math.sin(pi * gazey) * math.cos(2 * pi * gazex),
+        -math.sin(pi * gazey) * math.sin(2 * pi * gazex),
+        math.cos(pi * gazey)
+    )
+
+    dot_product = sum(a * b for a, b in zip(qC, qC_hat))
+
+    mag_qC = math.sqrt(sum(a * a for a in qC))
+    mag_qC_hat = math.sqrt(sum(b * b for b in qC_hat))
+
+    cos_theta = dot_product / (mag_qC * mag_qC_hat)
+
+    cos_theta = min(1.0, max(-1.0, cos_theta))
+
+    return math.acos(cos_theta)
 
 
 @torch.no_grad()
