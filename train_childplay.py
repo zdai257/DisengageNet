@@ -29,15 +29,12 @@ class ChildPlayDataset(torch.utils.data.dataset.Dataset):
         df_clips = pd.read_csv(join(dir_path, "clips.csv"))
 
         self.data = []
+        num_other_cls = 0
 
         for clip in os.listdir(join(dir_path, "annotations", split)):
             if clip.startswith('.') or not clip.endswith('.csv'):
                 continue
             clip_name = clip[:11]
-
-            # TODO missing clips
-            if clip_name == "js4wxP9HxG0" or clip_name == "w6oRoyTBmU4":
-                continue
 
             if 1:
                 annotation = join(dir_path, "annotations", split, clip)
@@ -49,6 +46,7 @@ class ChildPlayDataset(torch.utils.data.dataset.Dataset):
                     elif frame['gaze_class'] == 'outside_frame':
                         inout = 0
                     else:
+                        num_other_cls += 1
                         continue
                     frame_idx = int(frame['frame']) - 1
                     start_frame = int(clip.split('_')[-1].split('-')[0])
@@ -65,6 +63,11 @@ class ChildPlayDataset(torch.utils.data.dataset.Dataset):
                     gazex, gazey = float(frame['gaze_x']), float(frame['gaze_y'])
 
                     self.data.append((path, bbox, gazex, gazey, inout))
+
+        num_in = sum([item[4] for item in self.data])
+        num_out = len(self.data) - num_in
+        print("{} has {} total data; {} in; {} out; {} other classes.".format(split, len(self.data),
+                                                                              num_in, num_out, num_other_cls))
 
     def __getitem__(self, idx):
         img_path, bbox, gazex, gazey, inout = self.data[idx]
@@ -129,7 +132,7 @@ def main():
         str(config['train']['lr']),
         str(config['train']['fuse_lr']),
         str(config['train']['block_lr']),
-        # str(config['train']['inout_lr']),
+        str(config['train']['inout_lr']),
     ])
     exp_dir = os.path.join(config['logging']['log_dir'], checkpoint_dir)
     os.makedirs(exp_dir, exist_ok=True)
@@ -139,10 +142,10 @@ def main():
     # model, transform = get_gazelle_model(config)
     model, transform = get_gazemoe_model(config)
 
-    #print("Loading model from {}".format(config['model']['pretrained_path']))
+    print("Loading model from {}".format(config['model']['pretrained_path']))
     ### initializing from ckpt without inout head ###
-    #model.load_gazelle_state_dict(
-    #    torch.load(config['model']['pretrained_path'], weights_only=True, map_location=device))
+    model.load_gazelle_state_dict(
+        torch.load(config['model']['pretrained_path'], weights_only=True, map_location=device))
     ### if loading model incl. backbone ###
     # model.load_gazelle_state_dict(
     #    torch.load(config['model']['pretrained_path'], weights_only=True, map_location=device), include_backbone=False)
