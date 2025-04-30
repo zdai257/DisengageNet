@@ -13,7 +13,7 @@ model:
   reduction: "mean"  #"mean" or "none"
   bce_weight: 1.0  # 0.1 for ChildPlay
   mse_weight: 180.0
-  angle_weight: 0.0
+  angle_weight: 0.0  # 0.05 / 0.1
   vec_weight: 0.0
   kld_weight: 0.01  # 0.01, 0.02, 0.05, 0.1
   encoder:

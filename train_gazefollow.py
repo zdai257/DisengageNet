@@ -50,7 +50,7 @@ class HybridLoss(torch.nn.Module):
         loss = 0.0
         if self.bce_weight > 0:
             loss += self.bce_weight * self.bce_loss(pred, target)
-            print('bce_loss ', loss)
+            #print('bce_loss ', loss)
         if self.mse_weight > 0:
             loss += self.mse_weight * self.mse_loss(pred, target)
         if self.kld_weight > 0:
@@ -60,7 +60,7 @@ class HybridLoss(torch.nn.Module):
             pred_log_dist = torch.log(pred_dist + 1e-10)
             kld_loss = self.kld_weight * self.kld_loss(pred_log_dist, target_dist)
             # bce_loss 0.05 ~ 0.1 ; kld_loss 2.0 ~ 2.4
-            print("kld_loss", kld_loss)
+            #print("kld_loss", kld_loss)
             loss += kld_loss
         return loss
 
@@ -255,7 +255,8 @@ def main():
             bbox_ctrs = torch.stack(bbox_ctrs)
             angle_loss = angle_loss_fn(pred_xys - bbox_ctrs.to(device),
                                        gt_xys.to(device) - bbox_ctrs.to(device))
-            print('ang_loss: ', angle_loss.mean())
+            
+            #print('ang_loss: ', angle_loss.mean())
             # heatmap-bce value: 0.04 ~ 0.1; cosine angle loss value: 0.5 ~ 0.8
             loss = SCALAR * loss_fn(heatmap_preds, heatmaps.to(device)) + config['model']['angle_weight'] * angle_loss.mean()
             loss.backward()
