@@ -21,7 +21,7 @@ from eval import vat_auc, vat_l2
 
 
 class ChildPlayDataset(torch.utils.data.dataset.Dataset):
-    def __init__(self, transform, dir_path="/Users/zhuangzhuangdai/repos/ChildPlay-gaze", split='train'):
+    def __init__(self, transform, dir_path="./ChildPlay-gaze", split='train'):
         self.dir_path = dir_path
         self.split = split
         self.aug = self.split == "train"
@@ -118,7 +118,7 @@ def main():
 
     wandb.init(
         project=config['model']['name'],
-        name="train_gf360",
+        name="train_childplay",
         config=config
     )
 
@@ -213,12 +213,12 @@ def main():
     elif config['model']['pbce_loss'] == "bce":
         heatmap_loss_fn = torch.nn.BCELoss()
     elif config['model']['pbce_loss'] == "hybrid":
-        heatmap_loss_fn = HybridLoss(bce_weight=1.0, mse_weight=0.0, kld_weight=0.1)
+        heatmap_loss_fn = HybridLoss(bce_weight=config['model']['bce_weight'], mse_weight=0.0, kld_weight=config['model']['kld_weight'])
     else:
         raise TypeError("Loss not supported!")
 
     if config['model']['is_focal_loss'] == 1:
-        inout_loss_fn = FocalLoss()
+        inout_loss_fn = FocalLoss(alpha=0.06, gamma=2.0)
     else:
         inout_loss_fn = nn.BCELoss()
 

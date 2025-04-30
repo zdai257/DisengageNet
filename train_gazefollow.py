@@ -50,12 +50,18 @@ class HybridLoss(torch.nn.Module):
         loss = 0.0
         if self.bce_weight > 0:
             loss += self.bce_weight * self.bce_loss(pred, target)
+            print('bce_loss ', loss)
         if self.mse_weight > 0:
             loss += self.mse_weight * self.mse_loss(pred, target)
         if self.kld_weight > 0:
-            pred_dist = F.log_softmax(pred, dim=(2, 3))
-            target_dist = F.softmax(target, dim=(2, 3))
-            loss += self.kld_weight * self.kld_loss(pred_dist, target_dist)
+            #print(pred.shape, target.shape)
+            pred_dist = pred / (pred.sum(dim=(1, 2), keepdim=True) + 1e-10)
+            target_dist = target / (target.sum(dim=(1, 2), keepdim=True) + 1e-10)
+            pred_log_dist = torch.log(pred_dist + 1e-10)
+            kld_loss = self.kld_weight * self.kld_loss(pred_log_dist, target_dist)
+            # bce_loss 0.05 ~ 0.1 ; kld_loss 2.0 ~ 2.4
+            print("kld_loss", kld_loss)
+            loss += kld_loss
         return loss
 
 
@@ -224,7 +230,7 @@ def main():
     elif config['model']['pbce_loss'] == "bce":
         loss_fn = torch.nn.BCELoss()
     elif config['model']['pbce_loss'] == "hybrid":
-        loss_fn = HybridLoss(bce_weight=1.0, mse_weight=0.0, kld_weight=0.1)
+        loss_fn = HybridLoss(bce_weight=config['model']['bce_weight'], mse_weight=0.0, kld_weight=config['model']['kld_weight'])
     else:
         raise TypeError("Loss not supported!")
 
@@ -249,7 +255,8 @@ def main():
             bbox_ctrs = torch.stack(bbox_ctrs)
             angle_loss = angle_loss_fn(pred_xys - bbox_ctrs.to(device),
                                        gt_xys.to(device) - bbox_ctrs.to(device))
-            # heatmap-bce value: 0.04 ~ 0.1; cosine angle loss value: 0 ~ 2
+            print('ang_loss: ', angle_loss.mean())
+            # heatmap-bce value: 0.04 ~ 0.1; cosine angle loss value: 0.5 ~ 0.8
             loss = SCALAR * loss_fn(heatmap_preds, heatmaps.to(device)) + config['model']['angle_weight'] * angle_loss.mean()
             loss.backward()
             optimizer.step()

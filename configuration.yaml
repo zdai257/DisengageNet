@@ -1,8 +1,8 @@
 # General Configuration
 model:
   name: "gazemoe_dinov2_vitl14_inout"  # "gazelle_dinov2_vitl14_inout" OR "gazemoe_dinov2_vitl14_inout"
-  pretrained_path: "pretrainShared_epoch_14.pt"  # "gazelle_dinov2_vitl14_inout.pt"
-  mlp_ratio: 2  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size 4->2
+  pretrained_path: "pretrainShared_epoch_14.pt"  #"pretrainShared_epoch_14.pt" or "gazelle_dinov2_vitl14_inout.pt"
+  mlp_ratio: 4  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size 4->2
   num_experts: 4  # Routed experts 8->4
   num_shared_experts: 1  # Shared experts 2->1
   top_k: 2  # 2 / 1
@@ -11,10 +11,11 @@ model:
   is_focal_loss: 1  # if using FocalLoss for class balancing
   pbce_loss: "bce"  #"mse" or "bce" or "hybrid"
   reduction: "mean"  #"mean" or "none"
-  bce_weight: 1.0
+  bce_weight: 1.0  # 0.1 for ChildPlay
   mse_weight: 180.0
   angle_weight: 0.0
   vec_weight: 0.0
+  kld_weight: 0.01  # 0.01, 0.02, 0.05, 0.1
   encoder:
     type: "DINOv2"                  # Pretrained image encoder (DINOv2, CLIP, etc.)
     pretrained: true                # Use pretrained weights
@@ -36,10 +37,10 @@ train:
   # VAT finetuning hyperparams
   batch_size: 36                    # Batch size for training
   epochs: 10                    # Number of training epochs
-  lr: 0.00001                         # 0.00001
-  inout_lr: 0.001
-  fuse_lr: 0.00001
-  block_lr: 0.00001
+  lr: 0.0001                         # 0.00001 for VAt; 0.0001 for ChildPlay
+  inout_lr: 0.0002
+  fuse_lr: 0.0001
+  block_lr: 0.0001
   layer_decay: 0                    # 0 or 1
   optimizer: "Adam"                # Optimizer type (adam, adamw, sgd, etc.)
   weight_decay: 0.01                # Weight decay for optimizer
@@ -70,7 +71,7 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/GazeMoE/"           # auto naming
+  log_dir: "results/ChildPlay_shared_focal/"           # auto naming
   pre_dir: "results/pretrainShared/"
   save_every: 5
 
