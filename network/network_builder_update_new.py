@@ -1,0 +1,825 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision
+from timm.models.vision_transformer import Block
+import math
+import yaml
+import network.utils as utils
+from network.backbone import DinoV2Backbone
+
+
+#############################################
+# Transformer Block Alternatives
+#############################################
+# 1. Linformer Block
+class LinformerBlock(nn.Module):
+    def __init__(self, dim, num_heads, mlp_ratio=4, dropout=0.1, seq_len=196, k=64):
+        super().__init__()
+        self.num_heads = num_heads
+        self.dim = dim
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim ** -0.5
+        # Projection matrices to reduce sequence length for keys and values
+        self.E = nn.Parameter(torch.randn(seq_len, k))
+        self.F = nn.Parameter(torch.randn(seq_len, k))
+        self.q_proj = nn.Linear(dim, dim)
+        self.k_proj = nn.Linear(dim, dim)
+        self.v_proj = nn.Linear(dim, dim)
+        self.out_proj = nn.Linear(dim, dim)
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, int(dim * mlp_ratio)),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(int(dim * mlp_ratio), dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        # x: [B, L, C]
+        residual = x
+        x = self.norm1(x)
+        B, L, C = x.shape
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+        # Reshape for multi-head attention: [B, num_heads, L, head_dim]
+        q = q.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        # Project keys and values to lower-dimensional sequence (k dimension)
+        k_proj = torch.einsum("bhlc,lk->bhkc", k, self.E)  # [B, num_heads, k, head_dim]
+        v_proj = torch.einsum("bhlc,lk->bhkc", v, self.F)  # [B, num_heads, k, head_dim]
+        # Scale queries
+        q = q * self.scale
+        # Compute attention: [B, num_heads, L, k]
+        attn = torch.einsum("bhld,bhkd->bhlk", q, k_proj)
+        attn = torch.softmax(attn, dim=-1)
+        # Aggregate values: [B, num_heads, L, head_dim]
+        out = torch.einsum("bhlk,bhkd->bhld", attn, v_proj)
+        # Reshape back to [B, L, C]
+        out = out.transpose(1, 2).contiguous().view(B, L, C)
+        out = self.out_proj(out)
+        x = residual + out
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+# 2. Performer Block (Simplified Approximation)
+class PerformerBlock(nn.Module):
+    def __init__(self, dim, num_heads, mlp_ratio=4, dropout=0.1):
+        super().__init__()
+        self.num_heads = num_heads
+        self.dim = dim
+        self.head_dim = dim // num_heads
+        self.q_proj = nn.Linear(dim, dim)
+        self.k_proj = nn.Linear(dim, dim)
+        self.v_proj = nn.Linear(dim, dim)
+        self.out_proj = nn.Linear(dim, dim)
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, int(dim * mlp_ratio)),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(int(dim * mlp_ratio), dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        # x: [B, L, C]
+        residual = x
+        x = self.norm1(x)
+        B, L, C = x.shape
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+        # Reshape: [B, num_heads, L, head_dim]
+        q = q.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        # Apply a simple non-linearity as a feature map (here using ReLU)
+        q = torch.relu(q) + 1e-6
+        k = torch.relu(k) + 1e-6
+        # Compute a rough linear attention: here I sum k along sequence dimension
+        k_sum = k.sum(dim=2)  # [B, num_heads, head_dim]
+        # Multiply q by the aggregated key information (broadcast over sequence length)
+        out = q * k_sum.unsqueeze(2)  # [B, num_heads, L, head_dim]
+        # Reshape back to [B, L, C]
+        out = out.transpose(1, 2).contiguous().view(B, L, C)
+        out = self.out_proj(out)
+        x = residual + out
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+# 3. Shared Transformer (Parameter Sharing Across Layers)
+class SharedTransformer(nn.Module):
+    def __init__(self, transformer_block, num_layers):
+        super().__init__()
+        self.block = transformer_block  # A single transformer block (e.g., vanilla Block)
+        self.num_layers = num_layers
+
+    def forward(self, x):
+        for _ in range(self.num_layers):
+            x = self.block(x)
+        return x
+
+#############################################
+# Step 1: Wrap the Backbone for Multi-scale Features (MODIFIED)
+#############################################
+class DinoV2BackboneMultiScale(nn.Module):
+    # MODIFICATION: Add num_scales parameter to __init__
+    def __init__(self, model_name, num_scales=3): 
+        super().__init__()
+        self.base_backbone = DinoV2Backbone(model_name)
+        # Store the desired number of scales
+        self.num_scales = num_scales
+        if self.num_scales < 1:
+            raise ValueError("num_scales must be at least 1")
+        # Here I assume the base backbone returns a single feature map,
+        # and I simulate additional scales by downsampling.
+
+    # MODIFICATION: 
+    def forward(self, x):
+        # Obtain the original feature map [B, C, H, W]
+        features = self.base_backbone.forward(x)
+
+        multi_scale_features = []
+        current_features = features
+        for i in range(self.num_scales):
+            if i == 0:
+                # First scale is the original feature map
+                multi_scale_features.append(current_features)
+            else:
+                # Subsequent scales are downsampled
+                # Using 0.5^i as scale factor relative to the original
+                scale_factor = 0.5 ** i
+                downsampled_features = nn.functional.interpolate(
+                    features, scale_factor=scale_factor, mode='bilinear', align_corners=False
+                )
+                multi_scale_features.append(downsampled_features)
+
+        return multi_scale_features # Return a list of feature maps
+
+    def get_out_size(self, in_size):
+        # This might need adjustment if the *target* feature map size for fusion
+        # should change based on num_scales, but usually, it is fused to the
+        # highest resolution map's size. For now, I am keeping it based on the base backbone.
+        return self.base_backbone.get_out_size(in_size)
+
+    # MODIFICATION: Generalize get_multi_scale_channels
+    def get_multi_scale_channels(self):
+        C = self.base_backbone.get_dimension()
+        # Return a list of C repeated num_scales times
+        return [C] * self.num_scales
+
+    def get_transform(self, size):
+        return self.base_backbone.get_transform(size)
+    
+# class DinoV2BackboneMultiScale(nn.Module):
+#     def __init__(self, model_name):
+#         super().__init__()
+#         self.base_backbone = DinoV2Backbone(model_name)
+#         # Here I assume the base backbone returns a single feature map,
+#         # and I simulate two additional scales by downsampling.
+    
+#     def forward(self, x):
+#         # Obtain the original feature map [B, C, H, W]
+#         features = self.base_backbone.forward(x)
+#         # Simulate additional scales by downsampling
+#         f1 = features  # Highest resolution (scale 1)
+#         f2 = nn.functional.interpolate(features, scale_factor=0.5, mode='bilinear', align_corners=False)
+#         f3 = nn.functional.interpolate(features, scale_factor=0.25, mode='bilinear', align_corners=False)
+#         return [f1, f2, f3]
+    
+#     def get_out_size(self, in_size):
+#         return self.base_backbone.get_out_size(in_size)
+    
+#     def get_multi_scale_channels(self):
+#         C = self.base_backbone.get_dimension()
+#         return [C, C, C]
+    
+#     def get_transform(self, size):
+#         return self.base_backbone.get_transform(size)
+
+#############################################
+# Step 2: Lightweight Multi-scale Fusion Module
+#############################################
+class MultiScaleFusionLite(nn.Module):
+    def __init__(self, in_channels_list, out_channels, target_size):
+        """
+        Args:
+            in_channels_list: List of channel dimensions for each feature map.
+            out_channels: Desired number of channels after fusion.
+            target_size: Tuple (height, width) for spatial alignment.
+        """
+        super().__init__()
+        self.target_size = target_size
+        self.convs = nn.ModuleList([
+            nn.Conv2d(in_ch, out_channels, kernel_size=1)
+            for in_ch in in_channels_list
+        ])
+        # Learnable scalar weights for each scale
+        self.scale_weights = nn.Parameter(torch.ones(len(in_channels_list)))
+        self.refine_conv = nn.Conv2d(out_channels, out_channels, kernel_size=1)
+
+    def forward(self, feature_maps):
+        processed_maps = []
+        for conv, feat in zip(self.convs, feature_maps):
+            feat_proj = conv(feat)
+            feat_resized = nn.functional.interpolate(feat_proj, size=self.target_size, mode='bilinear', align_corners=False)
+            processed_maps.append(feat_resized)
+        weights = torch.softmax(self.scale_weights, dim=0)
+        fused = sum(w * feat for w, feat in zip(weights, processed_maps))
+        fused = self.refine_conv(fused)
+        return fused
+
+#############################################
+# Step 3: Modify the GazeLLE Model to Use Transformer Alternatives
+#############################################
+class GazeLLE(nn.Module):
+    def __init__(self, backbone, inout=False, dim=256, num_layers=3, in_size=(448, 448), out_size=(64, 64),
+                 transformer_type="vanilla"):
+        super().__init__()
+        self.backbone = backbone
+        self.dim = dim
+        self.num_layers = num_layers
+        self.featmap_h, self.featmap_w = backbone.get_out_size(in_size)
+        self.in_size = in_size
+        self.out_size = out_size
+        self.inout = inout
+
+        # Multi-scale fusion module (lightweight version)
+        multi_scale_channels = backbone.get_multi_scale_channels()
+        self.ms_fusion = MultiScaleFusionLite(
+            in_channels_list=multi_scale_channels,
+            out_channels=self.dim,
+            target_size=(self.featmap_h, self.featmap_w)
+        )
+        
+        # Positional encoding
+        self.register_buffer(
+            "pos_embed",
+            positionalencoding2d(self.dim, self.featmap_h, self.featmap_w)
+                .squeeze(dim=0).squeeze(dim=0)
+        )
+        
+        # Choose transformer architecture based on transformer_type
+        if transformer_type == "vanilla":
+            self.transformer = nn.Sequential(*[
+                Block(dim=self.dim, num_heads=8, mlp_ratio=4, drop_path=0.1)
+                for _ in range(num_layers)
+            ])
+        elif transformer_type == "linformer":
+            # Use our LinformerBlock with sequence length = featmap_h * featmap_w
+            seq_len = self.featmap_h * self.featmap_w
+            self.transformer = nn.Sequential(*[
+                LinformerBlock(dim=self.dim, num_heads=8, mlp_ratio=4, dropout=0.1, seq_len=seq_len, k=64)
+                for _ in range(num_layers)
+            ])
+        elif transformer_type == "performer":
+            self.transformer = nn.Sequential(*[
+                PerformerBlock(dim=self.dim, num_heads=8, mlp_ratio=4, dropout=0.1)
+                for _ in range(num_layers)
+            ])
+        elif transformer_type == "shared":
+            # Create one vanilla block and share it across num_layers iterations.
+            vanilla_block = Block(dim=self.dim, num_heads=8, mlp_ratio=4, drop_path=0.1)
+            self.transformer = SharedTransformer(vanilla_block, num_layers)
+        else:
+            raise ValueError("Unknown transformer type: {}".format(transformer_type))
+        
+        # Heatmap head.
+        self.heatmap_head = nn.Sequential(
+            nn.ConvTranspose2d(dim, dim, kernel_size=2, stride=2),
+            nn.Conv2d(dim, 1, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+        self.head_token = nn.Embedding(1, self.dim)
+        if self.inout:
+            self.inout_head = nn.Sequential(
+                nn.Linear(self.dim, 128),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(128, 1),
+                nn.Sigmoid()
+            )
+            self.inout_token = nn.Embedding(1, self.dim)
+
+    def forward(self, input):
+        # input["images"]: [B, 3, H, W]
+        # input["bboxes"]: list of list of bbox tuples per image in normalized coordinates
+        num_ppl_per_img = [len(bbox_list) for bbox_list in input["bboxes"]]
+        
+        # Multi-scale features and fusion
+        multi_scale_feats = self.backbone.forward(input["images"])
+        x = self.ms_fusion(multi_scale_feats)  # [B, dim, featmap_h, featmap_w]
+        
+        x = x + self.pos_embed
+        x = utils.repeat_tensors(x, num_ppl_per_img)
+        
+        head_maps = torch.cat(self.get_input_head_maps(input["bboxes"]), dim=0).to(x.device)
+        head_map_embeddings = head_maps.unsqueeze(dim=1) * self.head_token.weight.unsqueeze(-1).unsqueeze(-1)
+        x = x + head_map_embeddings
+        
+        # Flatten spatial dimensions for transformer input.
+        x = x.flatten(start_dim=2).permute(0, 2, 1)  # [B, H*W, dim]
+        
+        if self.inout:
+            x = torch.cat([self.inout_token.weight.unsqueeze(dim=0).repeat(x.shape[0], 1, 1), x], dim=1)
+        
+        x = self.transformer(x)
+        
+        if self.inout:
+            inout_tokens = x[:, 0, :]
+            inout_preds = self.inout_head(inout_tokens).squeeze(dim=-1)
+            inout_preds = utils.split_tensors(inout_preds, num_ppl_per_img)
+            x = x[:, 1:, :]
+        
+        x = x.reshape(x.shape[0], self.featmap_h, self.featmap_w, x.shape[2]).permute(0, 3, 1, 2)
+        x = self.heatmap_head(x).squeeze(dim=1)
+        x = torchvision.transforms.functional.resize(x, self.out_size)
+        heatmap_preds = utils.split_tensors(x, num_ppl_per_img)
+        
+        return {"heatmap": heatmap_preds, "inout": inout_preds if self.inout else None}
+
+    def get_input_head_maps(self, bboxes):
+        head_maps = []
+        for bbox_list in bboxes:
+            img_head_maps = []
+            for bbox in bbox_list:
+                if bbox is None:
+                    img_head_maps.append(torch.zeros(self.featmap_h, self.featmap_w))
+                else:
+                    xmin, ymin, xmax, ymax = bbox
+                    width, height = self.featmap_w, self.featmap_h
+                    xmin = round(xmin * width)
+                    ymin = round(ymin * height)
+                    xmax = round(xmax * width)
+                    ymax = round(ymax * height)
+                    head_map = torch.zeros((height, width))
+                    head_map[ymin:ymax, xmin:xmax] = 1
+                    img_head_maps.append(head_map)
+            head_maps.append(torch.stack(img_head_maps))
+        return head_maps
+    
+    def get_gazelle_state_dict(self, include_backbone=False):
+        if include_backbone:
+            return self.state_dict()
+        else:
+            return {k: v for k, v in self.state_dict().items() if not k.startswith("backbone")}
+        
+    def load_gazelle_state_dict(self, ckpt_state_dict, include_backbone=False):
+        current_state_dict = self.state_dict()
+        keys1 = current_state_dict.keys()
+        keys2 = ckpt_state_dict.keys()
+        if not include_backbone:
+            keys1 = set([k for k in keys1 if not k.startswith("backbone")])
+            keys2 = set([k for k in keys2 if not k.startswith("backbone")])
+        else:
+            keys1 = set(keys1)
+            keys2 = set(keys2)
+        if len(keys2 - keys1) > 0:
+            print("WARNING unused keys in provided state dict: ", keys2 - keys1)
+        if len(keys1 - keys2) > 0:
+            print("WARNING provided state dict does not have values for keys: ", keys1 - keys2)
+        for k in list(keys1 & keys2):
+            current_state_dict[k] = ckpt_state_dict[k]
+        self.load_state_dict(current_state_dict, strict=False)
+
+
+#############################################
+# Feed-forward Mixture-of-Experts (MoE)
+#############################################
+class MoELayer(nn.Module):
+    def __init__(self, in_features, out_features, num_experts=8, num_shared_experts=2, top_k=2, hidden_dim=None):
+        super().__init__()
+        self.num_experts = num_experts  # Routed experts
+        self.num_shared_experts = num_shared_experts  # Shared experts
+        self.top_k = top_k
+        self.in_features = in_features
+        self.out_features = out_features
+        self.hidden_dim = hidden_dim if hidden_dim is not None else in_features * 4
+
+        # Routed expert networks
+        self.routed_experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(in_features, self.hidden_dim),
+                nn.GELU(),
+                nn.Linear(self.hidden_dim, out_features)
+            ) for _ in range(num_experts)
+        ])
+
+        # Shared expert networks
+        self.shared_experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(in_features, self.hidden_dim),
+                nn.GELU(),
+                nn.Linear(self.hidden_dim, out_features)
+            ) for _ in range(num_shared_experts)
+        ])
+
+        # Gating network for routed experts only
+        self.gate = nn.Linear(in_features, num_experts)
+
+    def forward(self, x):
+        # x: [batch_size, seq_len, in_features] or [batch_size, in_features]
+        batch_shape = x.shape[:-1]
+        x_flat = x.view(-1, self.in_features)  # [batch_size * seq_len, in_features]
+
+        # Initialize output
+        output = torch.zeros(x_flat.shape[0], self.out_features, device=x.device)
+
+        # Shared experts: always applied
+        for expert in self.shared_experts:
+            output += expert(x_flat) / (self.num_shared_experts + 1e-10)  # Average shared contributions
+
+        # Routed experts: top-k selection
+        gate_logits = self.gate(x_flat)  # [batch_size * seq_len, num_experts]
+        gate_weights = torch.softmax(gate_logits, dim=-1)  # [batch_size * seq_len, num_experts]
+        top_k_weights, top_k_indices = gate_weights.topk(self.top_k, dim=-1)  # [batch_size * seq_len, top_k]
+        top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-10)  # Normalize
+
+        # Compute weighted sum of routed expert outputs
+        for k in range(self.top_k):
+            expert_idx = top_k_indices[:, k]  # [batch_size * seq_len]
+            weights = top_k_weights[:, k].unsqueeze(-1)  # [batch_size * seq_len, 1]
+            for i in range(self.num_experts):
+                mask = (expert_idx == i).float().unsqueeze(-1)  # [batch_size * seq_len, 1]
+                expert_output = self.routed_experts[i](x_flat)  # [batch_size * seq_len, out_features]
+                output += mask * weights * expert_output
+
+        # Reshape back to original shape
+        output = output.view(*batch_shape, self.out_features)
+        return output
+
+# Modified Transformer (ViT) Block with MoE
+class MoEBlock(Block):
+    def __init__(self, dim, num_heads, mlp_ratio=4., drop_path=0.1, num_experts=8, num_shared_experts=2, top_k=2):
+        super().__init__(dim, num_heads, mlp_ratio=mlp_ratio, drop_path=drop_path)
+        # Replace the FFN (self.mlp) with MoELayer
+        hidden_dim = int(dim * mlp_ratio)
+        self.mlp = MoELayer(
+            in_features=dim,
+            out_features=dim,
+            num_experts=num_experts,
+            num_shared_experts=num_shared_experts,
+            top_k=top_k,
+            hidden_dim=hidden_dim
+        )
+
+
+class GazeMoE(nn.Module):
+    def __init__(self, backbone, inout=False, dim=256, num_layers=3, in_size=(448, 448), out_size=(64, 64),
+                 num_experts=8, num_shared_experts=2, top_k=2, dropout=0.1, moe_type="vanilla", is_msf=False):
+        super().__init__()
+        self.backbone = backbone
+        self.dim = dim
+        self.num_layers = num_layers
+        self.featmap_h, self.featmap_w = backbone.get_out_size(in_size)
+        self.in_size = in_size
+        self.out_size = out_size
+        self.inout = inout
+        self.num_experts = num_experts
+        self.num_shared_experts = num_shared_experts
+        self.top_k = top_k
+        if not is_msf:
+            # Legacy
+            self.ms_fusion = nn.Conv2d(backbone.get_dimension(), self.dim, 1)
+        else:
+            # Multi-scale fusion module (lightweight version)
+            multi_scale_channels = backbone.get_multi_scale_channels()
+            self.ms_fusion = MultiScaleFusionLite(
+                in_channels_list=multi_scale_channels,
+                out_channels=self.dim,
+                target_size=(self.featmap_h, self.featmap_w)
+            )
+
+        self.register_buffer("pos_embed",
+                             positionalencoding2d(self.dim, self.featmap_h, self.featmap_w).squeeze(dim=0).squeeze(dim=0))
+
+        if moe_type == "vanilla":
+            self.transformer = nn.Sequential(*[
+                Block(dim=self.dim, num_heads=8, mlp_ratio=4, drop_path=dropout)
+                for _ in range(num_layers)
+            ])
+        elif moe_type == "shared":
+            # Create one vanilla block and share it across num_layers iterations.
+            vanilla_block = Block(dim=self.dim, num_heads=8, mlp_ratio=4, drop_path=dropout)
+            self.transformer = SharedTransformer(vanilla_block, num_layers)
+        else:
+            # Create Transformer blocks with MoE
+            self.transformer = nn.Sequential(*[
+                MoEBlock(
+                    dim=self.dim,
+                    num_heads=8,
+                    mlp_ratio=4,
+                    drop_path=dropout,
+                    num_experts=self.num_experts,
+                    num_shared_experts=self.num_shared_experts,
+                    top_k=self.top_k
+                ) for _ in range(num_layers)
+            ])
+
+        self.heatmap_head = nn.Sequential(
+            nn.ConvTranspose2d(dim, dim, kernel_size=2, stride=2),
+            nn.Conv2d(dim, 1, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+        # if using transformer-based up-sampling heatmap head
+        """
+        self.heatmap_head = nn.Sequential(
+            nn.Conv2d(dim, dim, 1),
+            Block(dim=dim, num_heads=8, mlp_ratio=4),
+            nn.Conv2d(dim, 1, 1),
+            nn.Sigmoid()
+        )
+        """
+
+        self.head_token = nn.Embedding(1, self.dim)
+        if self.inout:
+            self.inout_head = nn.Sequential(
+                nn.Linear(self.dim, 128),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(128, 1),
+                nn.Sigmoid()
+            )
+            """
+            self.inout_head = nn.Sequential(
+                MoELayer(self.dim, 128, num_experts=self.num_experts, top_k=self.top_k),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                MoELayer(128, 1, num_experts=self.num_experts, num_shared_experts=self.num_shared_experts,
+                         top_k=self.top_k),
+                nn.Sigmoid()
+            )
+            """
+            self.inout_token = nn.Embedding(1, self.dim)
+
+    def forward(self, input):
+        num_ppl_per_img = [len(bbox_list) for bbox_list in input["bboxes"]]
+        # Multi-scale features and fusion
+        feats = self.backbone.forward(input["images"])
+        x = self.ms_fusion(feats)  # [B, dim, featmap_h, featmap_w]
+
+        x = x + self.pos_embed
+        x = utils.repeat_tensors(x, num_ppl_per_img)
+        head_maps = torch.cat(self.get_input_head_maps(input["bboxes"]), dim=0).to(x.device)
+        head_map_embeddings = head_maps.unsqueeze(dim=1) * self.head_token.weight.unsqueeze(-1).unsqueeze(-1)
+        x = x + head_map_embeddings
+        x = x.flatten(start_dim=2).permute(0, 2, 1)
+
+        if self.inout:
+            x = torch.cat([self.inout_token.weight.unsqueeze(dim=0).repeat(x.shape[0], 1, 1), x], dim=1)
+
+        x = self.transformer(x)
+        # if using Residual connection:
+        """
+        x_residual = x
+        x = self.transformer(x)
+        x = x + x_residual
+        """
+
+        if self.inout:
+            inout_tokens = x[:, 0, :]
+            inout_preds = self.inout_head(inout_tokens).squeeze(dim=-1)
+            inout_preds = utils.split_tensors(inout_preds, num_ppl_per_img)
+            x = x[:, 1:, :]
+
+        x = x.reshape(x.shape[0], self.featmap_h, self.featmap_w, x.shape[2]).permute(0, 3, 1, 2)
+        x = self.heatmap_head(x).squeeze(dim=1)
+        x = torchvision.transforms.functional.resize(x, self.out_size)
+        heatmap_preds = utils.split_tensors(x, num_ppl_per_img)
+
+        return {"heatmap": heatmap_preds, "inout": inout_preds if self.inout else None}
+
+    def get_input_head_maps(self, bboxes):
+        head_maps = []
+        for bbox_list in bboxes:
+            img_head_maps = []
+            for bbox in bbox_list:
+                if bbox is None:
+                    img_head_maps.append(torch.zeros(self.featmap_h, self.featmap_w))
+                else:
+                    xmin, ymin, xmax, ymax = bbox
+                    width, height = self.featmap_w, self.featmap_h
+                    xmin = round(xmin * width)
+                    ymin = round(ymin * height)
+                    xmax = round(xmax * width)
+                    ymax = round(ymax * height)
+                    head_map = torch.zeros((height, width))
+                    head_map[ymin:ymax, xmin:xmax] = 1
+                    img_head_maps.append(head_map)
+            head_maps.append(torch.stack(img_head_maps))
+        return head_maps
+
+    def get_gazelle_state_dict(self, include_backbone=False):
+        if include_backbone:
+            return self.state_dict()
+        else:
+            return {k: v for k, v in self.state_dict().items() if not k.startswith("backbone")}
+
+    def load_gazelle_state_dict(self, ckpt_state_dict, include_backbone=False):
+        current_state_dict = self.state_dict()
+        keys1 = current_state_dict.keys()
+        keys2 = ckpt_state_dict.keys()
+
+        if not include_backbone:
+            keys1 = set([k for k in keys1 if not k.startswith("backbone")])
+            keys2 = set([k for k in keys2 if not k.startswith("backbone")])
+        else:
+            keys1 = set(keys1)
+            keys2 = set(keys2)
+
+        if len(keys2 - keys1) > 0:
+            print("WARNING unused keys in provided state dict: ", keys2 - keys1)
+        if len(keys1 - keys2) > 0:
+            print("WARNING provided state dict does not have values for keys: ", keys1 - keys2)
+
+        for k in list(keys1 & keys2):
+            current_state_dict[k] = ckpt_state_dict[k]
+
+        self.load_state_dict(current_state_dict, strict=False)
+
+#############################################
+# Positional Encoding (unchanged)
+#############################################
+def positionalencoding2d(d_model, height, width):
+    if d_model % 4 != 0:
+        raise ValueError("Cannot use sin/cos positional encoding with odd dimension (got dim={:d})".format(d_model))
+    pe = torch.zeros(d_model, height, width)
+    d_model_half = d_model // 2
+    div_term = torch.exp(torch.arange(0., d_model_half, 2) * -(math.log(10000.0) / d_model_half))
+    pos_w = torch.arange(0., width).unsqueeze(1)
+    pos_h = torch.arange(0., height).unsqueeze(1)
+    pe[0:d_model_half:2, :, :] = torch.sin(pos_w * div_term).transpose(0, 1).unsqueeze(1).repeat(1, height, 1)
+    pe[1:d_model_half:2, :, :] = torch.cos(pos_w * div_term).transpose(0, 1).unsqueeze(1).repeat(1, height, 1)
+    pe[d_model_half::2, :, :] = torch.sin(pos_h * div_term).transpose(0, 1).unsqueeze(2).repeat(1, 1, width)
+    pe[d_model_half + 1::2, :, :] = torch.cos(pos_h * div_term).transpose(0, 1).unsqueeze(2).repeat(1, 1, width)
+    return pe
+
+#############################################
+# Step 4: Update Model Creation Functions
+#############################################
+# Modify the Factory Functions to handle num_scales ---
+
+def get_gt360_model(configuration):
+    factory = {
+        "gazelle_dinov2_vitb14": gazelle_dinov2_vitb14,
+        "gazelle_dinov2_vitl14": gazelle_dinov2_vitl14,
+        "gazelle_dinov2_vitb14_inout": gazelle_dinov2_vitb14_inout,
+        "gazelle_dinov2_vitl14_inout": gazelle_dinov2_vitl14_inout,
+    }
+    model_name = configuration['model']['name']
+    assert model_name in factory.keys(), f"invalid model name: {model_name}"
+
+    # MODIFICATION: Extract num_scales from configuration, provide a default
+    num_scales = configuration['model'].get('num_scales', 3) # Default to 3 if not specified
+    transformer_type = configuration['model'].get('transformer_type', 'shared') # Get transformer type
+
+    # Pass num_scales and transformer_type to the specific model function
+    return factory[model_name](transformer_type=transformer_type, num_scales=num_scales)
+
+# def get_gt360_model(configuration):
+#     factory = {
+#         "gazelle_dinov2_vitb14": gazelle_dinov2_vitb14,
+#         "gazelle_dinov2_vitl14": gazelle_dinov2_vitl14,
+#         "gazelle_dinov2_vitb14_inout": gazelle_dinov2_vitb14_inout,
+#         "gazelle_dinov2_vitl14_inout": gazelle_dinov2_vitl14_inout,
+#     }
+#     assert configuration['model']['name'] in factory.keys(), "invalid model name"
+#     return factory[configuration['model']['name']]()
+
+
+# MODIFICATION: Add num_scales parameter
+def gazelle_dinov2_vitb14(transformer_type="shared", num_scales=3): 
+    backbone = DinoV2BackboneMultiScale('dinov2_vitb14', num_scales=num_scales)
+    transform = backbone.get_transform((448, 448))
+    model = GazeLLE(backbone, transformer_type=transformer_type)
+    return model, transform
+
+# def gazelle_dinov2_vitb14(transformer_type="shared"):
+#     backbone = DinoV2BackboneMultiScale('dinov2_vitb14')
+#     transform = backbone.get_transform((448, 448))
+#     model = GazeLLE(backbone, transformer_type=transformer_type)
+#     return model, transform
+
+# MODIFICATION: Add num_scales parameter
+def gazelle_dinov2_vitl14(transformer_type="shared", num_scales=3): 
+    backbone = DinoV2BackboneMultiScale('dinov2_vitl14', num_scales=num_scales)
+    transform = backbone.get_transform((448, 448))
+    model = GazeLLE(backbone, transformer_type=transformer_type)
+    return model, transform
+
+# def gazelle_dinov2_vitl14(transformer_type="shared"):
+#     backbone = DinoV2BackboneMultiScale('dinov2_vitl14')
+#     transform = backbone.get_transform((448, 448))
+#     model = GazeLLE(backbone, transformer_type=transformer_type)
+#     return model, transform
+
+# MODIFICATION: Add num_scales parameter
+def gazelle_dinov2_vitb14_inout(transformer_type="shared", num_scales=3): 
+    backbone = DinoV2BackboneMultiScale('dinov2_vitb14', num_scales=num_scales)
+    transform = backbone.get_transform((448, 448))
+    model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)
+    return model, transform
+
+# def gazelle_dinov2_vitb14_inout(transformer_type="shared"):
+#     backbone = DinoV2BackboneMultiScale('dinov2_vitb14')
+#     transform = backbone.get_transform((448, 448))
+#     model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)
+#     return model, transform
+
+# MODIFICATION: Add num_scales parameter
+def gazelle_dinov2_vitl14_inout(transformer_type="shared", num_scales=3): 
+    backbone = DinoV2BackboneMultiScale('dinov2_vitl14', num_scales=num_scales)
+    transform = backbone.get_transform((448, 448))
+    model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)
+    return model, transform
+
+# def gazelle_dinov2_vitl14_inout(transformer_type="shared"):  # performer / vanilla
+#     backbone = DinoV2BackboneMultiScale('dinov2_vitl14')
+#     transform = backbone.get_transform((448, 448))
+#     model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)
+#     return model, transform
+
+
+# MODIFICATION: Add num_scales parameter (assuming is_msf=True uses the multi-scale backbone)
+def gazemoe_dinov2_vitl14_inout(d_model, num_layers, num_experts, num_shared_experts, top_k, dropout, moe_type, is_msf, num_scales=3): # Add num_scales
+    if not is_msf:
+        # origin backbone
+        backbone = DinoV2Backbone('dinov2_vitl14')
+    else:
+        backbone = DinoV2BackboneMultiScale('dinov2_vitl14', num_scales=num_scales)
+    transform = backbone.get_transform((448, 448))
+    model = GazeMoE(backbone, inout=True, dim=d_model, num_layers=num_layers, num_experts=num_experts,
+                    num_shared_experts=num_shared_experts, top_k=top_k, dropout=dropout, moe_type=moe_type, is_msf=is_msf)
+    return model, transform
+
+# def gazemoe_dinov2_vitl14_inout(d_model, num_layers, num_experts, num_shared_experts, top_k, dropout, moe_type, is_msf):
+#     if not is_msf:
+#         # origin backbone
+#         backbone = DinoV2Backbone('dinov2_vitl14')
+#     else:
+#         backbone = DinoV2BackboneMultiScale('dinov2_vitl14')
+#     transform = backbone.get_transform((448, 448))
+#     model = GazeMoE(backbone, inout=True, dim=d_model, num_layers=num_layers, num_experts=num_experts,
+#                     num_shared_experts=num_shared_experts, top_k=top_k, dropout=dropout, moe_type=moe_type, is_msf=is_msf)
+#     return model, transform
+
+
+def get_gazemoe_model(configuration):
+    factory = {
+        "gazemoe_dinov2_vitl14_inout": gazemoe_dinov2_vitl14_inout,
+    }
+    model_name = configuration['model']['name']
+    assert model_name in factory.keys(), f"invalid model name: {model_name}"
+
+    # MODIFICATION: Extract num_scales from configuration, provide a default
+    num_scales = configuration['model'].get('num_scales', 3) # Default to 3 if not specified
+    is_msf = configuration['model'].get('is_msf', False)
+
+    # Only pass num_scales if multi-scale fusion is enabled
+    if is_msf:
+        return factory[model_name](
+            d_model=configuration['model']['decoder']['hidden_size'],
+            num_layers=configuration['model']['decoder']['depth'],
+            num_experts=configuration['model']['num_experts'],
+            num_shared_experts=configuration['model']['num_shared_experts'],
+            top_k=configuration['model']['top_k'],
+            dropout=configuration['model']['decoder']['dropout'],
+            moe_type=configuration['model']['moe_type'],
+            is_msf=is_msf,
+            num_scales=num_scales # Pass num_scales here
+        )
+    else:
+         # If not using MSF, num_scales is irrelevant for backbone creation
+        return factory[model_name](
+            d_model=configuration['model']['decoder']['hidden_size'],
+            num_layers=configuration['model']['decoder']['depth'],
+            num_experts=configuration['model']['num_experts'],
+            num_shared_experts=configuration['model']['num_shared_experts'],
+            top_k=configuration['model']['top_k'],
+            dropout=configuration['model']['decoder']['dropout'],
+            moe_type=configuration['model']['moe_type'],
+            is_msf=is_msf,
+            num_scales=1 # Or pass the default, though it won't be used for MSF
+        )
+
+# def get_gazemoe_model(configuration):
+#     factory = {
+#         "gazemoe_dinov2_vitl14_inout": gazemoe_dinov2_vitl14_inout,
+#     }
+#     assert configuration['model']['name'] in factory.keys(), "invalid model name"
+#     return factory[configuration['model']['name']](
+#         d_model=configuration['model']['decoder']['hidden_size'],
+#         num_layers=configuration['model']['decoder']['depth'],
+#         num_experts=configuration['model']['num_experts'],
+#         num_shared_experts=configuration['model']['num_shared_experts'],
+#         top_k=configuration['model']['top_k'],
+#         dropout=configuration['model']['decoder']['dropout'],
+#         moe_type=configuration['model']['moe_type'],
+#         is_msf=configuration['model']['is_msf'],
+#     )
