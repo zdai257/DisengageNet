@@ -207,8 +207,8 @@ def main():
             gt_vec = gt_xys.to(device) - bbox_ctrs.to(device)
             angle_loss = angle_loss_fn(pred_vec[inout.bool()], gt_vec[inout.bool()])
             # inout: bce_loss 0.3 ~ 0.6 ; focal_loss 0.07 ~ 0.15
-            print('hm_loss : {}, inout_loss: {}'.format(heatmap_loss, inout_loss))
-            loss = SCALAR * heatmap_loss + config['model']['bce_weight'] * inout_loss \
+            #print('hm_loss : {}, inout_loss: {}'.format(heatmap_loss, inout_loss))
+            loss = SCALAR * heatmap_loss + 1.0 * inout_loss \
                    + config['model']['angle_weight'] * angle_loss.mean()
             loss.backward()
             optimizer.step()
