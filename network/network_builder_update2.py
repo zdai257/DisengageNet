@@ -6,7 +6,7 @@ from timm.models.vision_transformer import Block
 import math
 import yaml
 import network.utils as utils
-from network.backbone import DinoV2Backbone
+from network.backbone import DinoV2Backbone, CLIPBackbone
 
 
 #############################################
@@ -129,28 +129,56 @@ class SharedTransformer(nn.Module):
 # Step 1: Wrap the Backbone for Multi-scale Features
 #############################################
 class DinoV2BackboneMultiScale(nn.Module):
-    def __init__(self, model_name):
+    def __init__(self, model_name, num_scales=3):
         super().__init__()
-        self.base_backbone = DinoV2Backbone(model_name)
+        if model_name.startswith('ViT'):
+            #self.base_backbone = CLIPBackbone(model_name)
+            pass
+        # TODO BEiT input size 224
+        #elif model_name.startswith('beit'):  # 'microsoft/beit-base-patch16-224-pt22k'
+        #    self.base_backbone = BeitBackbone('microsoft/' + model_name)
+        else:
+            self.base_backbone = DinoV2Backbone(model_name)
+        # Store the desired number of scales
+        self.num_scales = num_scales
+        if self.num_scales < 1:
+            raise ValueError("num_scales must be at least 1")
         # Here I assume the base backbone returns a single feature map,
-        # and I simulate two additional scales by downsampling.
-    
+        # and I simulate additional scales by downsampling.
+
+    # MODIFICATION:
     def forward(self, x):
         # Obtain the original feature map [B, C, H, W]
         features = self.base_backbone.forward(x)
-        # Simulate additional scales by downsampling
-        f1 = features  # Highest resolution (scale 1)
-        f2 = nn.functional.interpolate(features, scale_factor=0.5, mode='bilinear', align_corners=False)
-        f3 = nn.functional.interpolate(features, scale_factor=0.25, mode='bilinear', align_corners=False)
-        return [f1, f2, f3]
-    
+
+        multi_scale_features = []
+        current_features = features
+        for i in range(self.num_scales):
+            if i == 0:
+                # First scale is the original feature map
+                multi_scale_features.append(current_features)
+            else:
+                # Subsequent scales are downsampled
+                # Using 0.5^i as scale factor relative to the original
+                scale_factor = 0.5 ** i
+                downsampled_features = nn.functional.interpolate(
+                    features, scale_factor=scale_factor, mode='bilinear', align_corners=False
+                )
+                multi_scale_features.append(downsampled_features)
+
+        return multi_scale_features # Return a list of feature maps
+
     def get_out_size(self, in_size):
+        # This might need adjustment if the *target* feature map size for fusion
+        # should change based on num_scales, but usually, it is fused to the
+        # highest resolution map's size. For now, I am keeping it based on the base backbone.
         return self.base_backbone.get_out_size(in_size)
-    
+
     def get_multi_scale_channels(self):
         C = self.base_backbone.get_dimension()
-        return [C, C, C]
-    
+        # Return a list of C repeated num_scales times
+        return [C] * self.num_scales
+
     def get_transform(self, size):
         return self.base_backbone.get_transform(size)
 
@@ -645,13 +673,19 @@ def gazelle_dinov2_vitl14_inout(transformer_type="shared"):  # performer / vanil
     model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)
     return model, transform
 
-def gazemoe_dinov2_vitl14_inout(d_model, mlp_ratio, num_layers, num_experts, num_shared_experts, top_k, dropout,
+def gazemoe_dinov2_vitl14_inout(type, d_model, mlp_ratio, num_layers, num_experts, num_shared_experts, top_k, dropout,
                                 moe_type, is_msf):
-    if not is_msf:
-        # origin backbone
-        backbone = DinoV2Backbone('dinov2_vitl14')
+    if type == "DINOv2":
+        # origin backbone if is_msf == 1
+        backbone = DinoV2BackboneMultiScale('dinov2_vitl14', num_scales=is_msf)
+    #elif type == "beit-base-patch16-224-pt22k":  # beit-base-patch16-224-pt22k OR beit-large-patch16-224-pt22k
+    #    backbone = DinoV2BackboneMultiScale("beit-base-patch16-224-pt22k", num_scales=is_msf)
+
+    elif type == "ViT-B/16" or type == "ViT-L/14":
+        backbone = DinoV2BackboneMultiScale(type, num_scales=is_msf)
     else:
-        backbone = DinoV2BackboneMultiScale('dinov2_vitl14')
+        raise TypeError("backbone not supported!")
+
     transform = backbone.get_transform((448, 448))
     model = GazeMoE(backbone, inout=True, dim=d_model, mlp_ratio=mlp_ratio, num_layers=num_layers, num_experts=num_experts,
                     num_shared_experts=num_shared_experts, top_k=top_k, dropout=dropout,
@@ -664,6 +698,7 @@ def get_gazemoe_model(configuration):
     }
     assert configuration['model']['name'] in factory.keys(), "invalid model name"
     return factory[configuration['model']['name']](
+        type=configuration['model']['encoder']['type'],
         d_model=configuration['model']['decoder']['hidden_size'],
         mlp_ratio=configuration['model']['mlp_ratio'],
         num_layers=configuration['model']['decoder']['depth'],

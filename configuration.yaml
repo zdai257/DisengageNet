@@ -7,7 +7,7 @@ model:
   num_shared_experts: 1  # Shared experts 2->1
   top_k: 2  # 2 / 1
   moe_type: "shared"  # vanilla / shared / else (moe)
-  is_msf: 1
+  is_msf: 3  # 1, 2, 3, 4, 5
   is_focal_loss: 1  # if using FocalLoss for class balancing
   pbce_loss: "bce"  #"mse" or "bce" or "hybrid"
   reduction: "mean"  #"mean" or "none"
@@ -17,7 +17,7 @@ model:
   vec_weight: 0.0
   kld_weight: 0.01  # 0.01, 0.02, 0.05, 0.1
   encoder:
-    type: "DINOv2"                  # Pretrained image encoder (DINOv2, CLIP, etc.)
+    type: "DINOv2"   # backbone: DINOv2, ViT-B/16, ViT-L/14
     pretrained: true                # Use pretrained weights
   decoder:
     hidden_size: 256                # d_model
@@ -31,7 +31,7 @@ data:
   test_path: "./VAT"       # Path to preprocessed test dataset
   pre_train_path: "./gazefollow_extended"
   pre_test_path: "./gazefollow_extended"
-  augmentations: []
+  augmentations: ["photometric" ]
 
 train:
   # VAT finetuning hyperparams

@@ -66,7 +66,7 @@ class HybridLoss(torch.nn.Module):
 
 
 class GazeDataset(torch.utils.data.dataset.Dataset):
-    def __init__(self, dataset_name, path, split, transform, in_frame_only=True, sample_rate=1):
+    def __init__(self, dataset_name, path, split, transform, in_frame_only=True, sample_rate=1, aug_groups=None):
         self.dataset_name = dataset_name
         self.path = path
         self.split = split
@@ -74,6 +74,7 @@ class GazeDataset(torch.utils.data.dataset.Dataset):
         self.transform = transform
         self.in_frame_only = in_frame_only
         self.sample_rate = sample_rate
+        self.aug_groups = aug_groups if aug_groups is not None else []
 
         if dataset_name == "gazefollow":
             self.data = load_data_gazefollow(os.path.join(self.path, "{}_preprocessed.json".format(split)))
@@ -121,6 +122,20 @@ class GazeDataset(torch.utils.data.dataset.Dataset):
             bbox_norm = [bbox[0] / width, bbox[1] / height, bbox[2] / width, bbox[3] / height]
             gazex_norm = [x / float(width) for x in gazex]
             gazey_norm = [y / float(height) for y in gazey]
+
+            if np.random.sample() <= 0.5 and 'photometric' in self.aug_groups:
+                photometric_transforms = transforms.Compose([
+                    transforms.RandomApply(
+                    [transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1)], p=0.5),
+                    transforms.RandomGrayscale(p=0.2),
+                    #transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0)),  # kernel size can be adjusted
+                    #transforms.RandomSolarize(threshold=128, p=0.1),
+                    #transforms.RandomPosterize(bits=4, p=0.1),  # Reduce to 4 bits per channel
+                    transforms.RandomAdjustSharpness(sharpness_factor=1.5, p=0.1),
+                    transforms.RandomAutocontrast(p=0.1),
+                    #transforms.RandomEqualize(p=0.1),
+                ])
+                img = photometric_transforms(img)
 
         img = self.transform(img)
 
@@ -185,7 +200,8 @@ def main():
         param.requires_grad = False
     print(f"Learnable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
-    train_dataset = GazeDataset('gazefollow', config['data']['pre_train_path'], 'train', transform)
+    train_dataset = GazeDataset('gazefollow', config['data']['pre_train_path'], 'train', transform,
+                                aug_groups=config['data']['augmentations'])
     train_dl = torch.utils.data.DataLoader(train_dataset,
                                            batch_size=config['train']['pre_batch_size'],
                                            shuffle=True,
