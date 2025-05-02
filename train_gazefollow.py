@@ -109,13 +109,15 @@ class GazeDataset(torch.utils.data.dataset.Dataset):
             gazex = head_data['gazex']
             gazey = head_data['gazey']
 
-            if np.random.sample() <= 0.5:
+            if np.random.sample() <= 0.5 and 'crop' in self.aug_groups:
                 img, bbox, gazex, gazey = utils.random_crop(img, bbox, gazex, gazey, inout)
-            if np.random.sample() <= 0.5:
+            if np.random.sample() <= 0.5 and 'crop' in self.aug_groups:
                 img, bbox, gazex, gazey = utils.horiz_flip(img, bbox, gazex, gazey, inout)
-            if np.random.sample() <= 0.5:
-                bbox = utils.random_bbox_jitter(img, bbox)
             # TODO more augmentations
+            if np.random.sample() <= 0.5 and 'rotation' in self.aug_groups:
+                img, bbox, gazex, gazey = utils.random_rotation(img, bbox, gazex, gazey, inout, degrees=(-10, 10))
+            if np.random.sample() <= 0.5 and 'crop' in self.aug_groups:
+                bbox = utils.random_bbox_jitter(img, bbox)
 
             # update width and height and re-normalize
             width, height = img.size

@@ -2,26 +2,26 @@
 model:
   name: "gazemoe_dinov2_vitl14_inout"  # "gazelle_dinov2_vitl14_inout" OR "gazemoe_dinov2_vitl14_inout"
   pretrained_path: "pretrainShared_epoch_14.pt"  #"pretrainShared_epoch_14.pt" or "gazelle_dinov2_vitl14_inout.pt"
-  mlp_ratio: 4  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size 4->2
-  num_experts: 4  # Routed experts 8->4
-  num_shared_experts: 1  # Shared experts 2->1
-  top_k: 2  # 2 / 1
-  moe_type: "shared"  # vanilla / shared / else (moe)
-  is_msf: 3  # 1, 2, 3, 4, 5
+  mlp_ratio: 4  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size [1, 2, 4]
+  num_experts: 4  # Routed experts [3, 4, 6]
+  num_shared_experts: 1  # Shared experts [1, 2]
+  top_k: 2  # [1, 2]
+  moe_type: "moe"  # vanilla / shared / else (moe)
+  is_msf: 3  # [2, 3, 4, 5]
   is_focal_loss: 1  # if using FocalLoss for class balancing
-  pbce_loss: "bce"  #"mse" or "bce" or "hybrid"
+  pbce_loss: "hybrid"  #"mse" or "bce" or "hybrid"
   reduction: "mean"  #"mean" or "none"
   bce_weight: 1.0  # 0.1 for ChildPlay
   mse_weight: 180.0
   angle_weight: 0.0  # 0.05 / 0.1
   vec_weight: 0.0
-  kld_weight: 0.01  # 0.01, 0.02, 0.05, 0.1
+  kld_weight: 0.01  # 0.01, 0.02, 0.05, 0.1 [0.0, 0.02, 0.05, 0.1]
   encoder:
     type: "DINOv2"   # backbone: DINOv2, ViT-B/16, ViT-L/14
     pretrained: true                # Use pretrained weights
   decoder:
-    hidden_size: 256                # d_model
-    depth: 3                        # Number of transformer layers in the decoder (default 3)
+    hidden_size: 256                # d_model [256, 384]
+    depth: 3                        # Number of transformer layers in the decoder (default 3) [3, 4]
     num_heads: 8                    # Number of attention heads
     dropout: 0.1                    # Dropout rate
 
@@ -31,7 +31,7 @@ data:
   test_path: "./VAT"       # Path to preprocessed test dataset
   pre_train_path: "./gazefollow_extended"
   pre_test_path: "./gazefollow_extended"
-  augmentations: ["photometric" ]
+  augmentations: ["crop", "photometric", "rotation"]  # [["crop"], ["crop", "photometric"], ["crop", "rotation"], ["crop", "photometric", "rotation"]]
 
 train:
   # VAT finetuning hyperparams
@@ -55,11 +55,11 @@ train:
   pre_fuse_lr: 0.001
   pre_block_lr: 0.001
   pre_batch_size: 60   # 60
-  pre_epochs: 15   # 15
+  pre_epochs: 20   # 15
   pre_optimizer: "Adam"
   pre_lr_scheduler:
     type: "cosine"                  # cosine / linear
-    step_size: 15                   # Step size for step scheduler
+    step_size: 20                   # Step size for step scheduler
     gamma: 0.1                      # Decay factor for step/exponential scheduler
     min_lr: 1e-7                    # Minimum learning rate for cosine/other schedulers
 
@@ -72,10 +72,10 @@ inference:
 
 logging:
   log_dir: "results/ChildPlay_shared_focal/"           # auto naming
-  pre_dir: "results/pretrainShared/"
+  pre_dir: "results/pretrainMoE/"
   save_every: 5
 
 hardware:
-  device: "cuda:2"                    # Device to use (cuda, cpu)
+  device: "cuda:0"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading

@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import cv2
 
 import torchvision
+import torchvision.transforms.functional as TF
 import random
 from sklearn.metrics import roc_auc_score
 
@@ -383,6 +384,84 @@ def random_bbox_jitter(img, bbox):
     bbox = [max(0, xmin_j + xmin), max(0, ymin_j + ymin), min(width, xmax_j + xmax), min(height, ymax_j + ymax)]
 
     return bbox
+
+
+def apply_affine_transform_to_coords(coords, img_size, matrix):
+    """
+    Applies an affine transformation matrix to a list of (x, y) coordinates.
+    Args:
+        coords (list): List of (x, y) tuples or lists (pixel coordinates).
+        img_size (tuple): (width, height) of the original image.
+        matrix (list): A 2x3 affine transformation matrix [a, b, c, d, e, f].
+    Returns:
+        list: List of transformed (x', y') coordinates (pixel coordinates).
+    """
+    if not coords:
+        return []
+
+    transformed_coords = []
+    M = np.array(matrix).reshape(2, 3)
+
+    for x, y in coords:
+        original_point = np.array([x, y, 1])
+        transformed_point = np.dot(M, original_point)
+        transformed_coords.append([transformed_point[0], transformed_point[1]])
+    return transformed_coords
+
+
+# new random rotation
+def random_rotation(img, bbox, gazex, gazey, inout, degrees=(-10, 10), fill_color=(128, 128, 128)):
+    angle = random.uniform(degrees[0], degrees[1])
+
+    # Get the affine matrix for rotation
+    rot_matrix = TF._get_affine_matrix(
+        angle=angle, translate=[0, 0], scale=1.0, shear=[0, 0], resample=Image.BILINEAR, fillcolor=fill_color
+    )
+    img = TF.affine(img, angle=angle, translate=[0, 0], scale=1.0, shear=[0, 0], resample=Image.BILINEAR, fillcolor=fill_color)
+
+    # Apply the same transformation to coordinates (pixel coordinates)
+    # Bbox corners: (xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)
+    bbox_corners = [
+        (bbox[0], bbox[1]),
+        (bbox[2], bbox[1]),
+        (bbox[2], bbox[3]),
+        (bbox[0], bbox[3])
+    ]
+
+    # Gaze points
+    gaze_points = list(zip(gazex, gazey))
+
+    # Combine all points for transformation
+    all_points = bbox_corners + gaze_points
+
+    # Apply the affine transformation to all points
+    transformed_points = apply_affine_transform_to_coords(all_points, img.size, rot_matrix)
+
+    # Extract transformed bbox corners and gaze points
+    transformed_bbox_corners = transformed_points[:4]
+    transformed_gaze_points = transformed_points[4:]
+
+    # Find the new axis-aligned bounding box from rotated corners
+    if transformed_bbox_corners:
+        x_coords = [p[0] for p in transformed_bbox_corners]
+        y_coords = [p[1] for p in transformed_bbox_corners]
+        # Clamp the new bbox to the bounds of the potentially expanded rotated image
+        new_xmin = max(0, min(x_coords))
+        new_ymin = max(0, min(y_coords))
+        new_xmax = min(img.size[0] - 1, max(x_coords)) # Ensure max is within bounds
+        new_ymax = min(img.size[1] - 1, max(y_coords)) # Ensure max is within bounds
+        # Ensure the new bbox is valid
+        if new_xmax > new_xmin and new_ymax > new_ymin:
+            bbox = [new_xmin, new_ymin, new_xmax, new_ymax]
+        else:
+            # If rotation results in an invalid bbox, return the original
+            pass
+
+    # Update gaze points
+    if transformed_gaze_points:
+        gazex = [p[0] for p in transformed_gaze_points]
+        gazey = [p[1] for p in transformed_gaze_points]
+    return img, bbox, gazex, gazey
 
 
 def get_heatmap(gazex, gazey, height, width, sigma=3, htype="Gaussian"):
