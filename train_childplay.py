@@ -21,7 +21,7 @@ from eval import vat_auc, vat_l2
 
 
 class ChildPlayDataset(torch.utils.data.dataset.Dataset):
-    def __init__(self, transform, dir_path="./ChildPlay-gaze", split='train'):
+    def __init__(self, transform, dir_path="../ChildPlay-gaze", split='train'):
         self.dir_path = dir_path
         self.split = split
         self.aug = self.split == "train"
@@ -230,8 +230,10 @@ def main():
 
             optimizer.zero_grad()
             preds = model({"images": imgs.to(device), "bboxes": [[bbox] for bbox in bboxes]})
+
             heatmap_preds = torch.stack(preds['heatmap']).squeeze(dim=1)
             inout_preds = torch.stack(preds['inout']).squeeze(dim=1)
+            #print(heatmap_preds.shape, inout_preds)
 
             # compute heatmap loss only for in-frame gaze targets
             heatmap_loss = heatmap_loss_fn(heatmap_preds[inout.bool()], heatmaps[inout.bool()].to(device))
@@ -272,6 +274,8 @@ def main():
         model.eval()
         l2s = []
         aucs = []
+        all_inout_preds = []
+        all_inout_gts = []
 
         for cur_iter, batch in tqdm(enumerate(eval_dl), total=len(eval_dl)):
             imgs, bboxes, gazex, gazey, inout, heights, widths = batch
@@ -287,14 +291,17 @@ def main():
                     l2 = vat_l2(heatmap_preds[i], gazex[i][0], gazey[i][0])
                     aucs.append(auc)
                     l2s.append(l2)
+                all_inout_preds.append(inout_preds[i].item())
+                all_inout_gts.append(inout[i])
 
         epoch_l2 = np.mean(l2s)
         epoch_auc = np.mean(aucs)
+        epoch_inout_ap = average_precision_score(all_inout_gts, all_inout_preds)
 
-        wandb.log({"eval/auc": epoch_auc, "eval/l2": epoch_l2, "epoch": epoch})
-        print("EVAL EPOCH {}: AUC={}, Aver_L2={}".format(epoch,
-                                                         round(float(epoch_auc), 4),
-                                                         round(float(epoch_l2), 4)))
+        wandb.log({"eval/auc": epoch_auc, "eval/l2": epoch_l2, "AP": epoch_inout_ap, "epoch": epoch})
+        print("EVAL EPOCH {}: AUC={}, Aver_L2={}, AP={}".format(epoch,
+                                                                round(float(epoch_auc), 4),
+                                                                round(float(epoch_l2), 4), round(float(epoch_inout_ap), 4)))
 
 
 if __name__ == '__main__':

@@ -15,7 +15,7 @@ model:
   mse_weight: 180.0
   angle_weight: 0.0  # 0.05 / 0.1
   vec_weight: 0.0
-  kld_weight: 0.01  # 0.01, 0.02, 0.05, 0.1 [0.0, 0.02, 0.05, 0.1]
+  kld_weight: 0.02  # 0.01, 0.02, 0.05, 0.1 [0.0, 0.02, 0.05, 0.1]
   encoder:
     type: "DINOv2"   # backbone: DINOv2, ViT-B/16, ViT-L/14
     pretrained: true                # Use pretrained weights
@@ -31,11 +31,12 @@ data:
   test_path: "./VAT"       # Path to preprocessed test dataset
   pre_train_path: "./gazefollow_extended"
   pre_test_path: "./gazefollow_extended"
-  augmentations: ["crop", "photometric", "rotation"]  # [["crop"], ["crop", "photometric"], ["crop", "rotation"], ["crop", "photometric", "rotation"]]
+  # [["crop"], ["crop", "photometric"], ["crop", "rotation"], ["crop", "photometric", "rotation"]]
+  augmentations: ["crop", "photometric", "rotation"]
 
 train:
   # VAT finetuning hyperparams
-  batch_size: 36                    # Batch size for training
+  batch_size: 6                    # Batch size for training
   epochs: 10                    # Number of training epochs
   lr: 0.0001                         # 0.00001 for VAt; 0.0001 for ChildPlay
   inout_lr: 0.0002
