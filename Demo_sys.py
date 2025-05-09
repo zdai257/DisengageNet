@@ -8,10 +8,11 @@ from torchvision import transforms
 import numpy as np
 from PIL import Image, ImageDraw
 import dlib
+import yaml
 import matplotlib.pyplot as plt
 from network.network_builder import get_gazelle_model
 #from network.network_builder_update import get_gt360_model
-from network.network_builder_update2 import get_gt360_model
+from network.network_builder_update2 import get_gt360_model, get_gazemoe_model
 from network.ec_network_builder import get_ec_model
 from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3
 
@@ -29,11 +30,13 @@ if not os.path.isfile(PREDICTOR_PATH):
 
 class DemoSys():
     def __init__(self, model_gt='gazelle_dinov2_vitl14_inout.pt', model_ec=MODEL_WEIGHTS, facedetect=None):
-        self.saved_path = "GT360output.png"
+        self.saved_path = "GazeMoEoutput.png"
         self.savefigs = 1
 
-        config = {'model': {}}
-        config['model']['name'] = "gazelle_dinov2_vitl14_inout"
+        #config = {'model': {}}
+        #config['model']['name'] = "gazelle_dinov2_vitl14_inout"
+        with open('configuration.yaml', 'r') as file:
+            config = yaml.safe_load(file)
 
         self.device = 'cuda' if torch.cuda.is_available() else "cpu"
         config['hardware'] = {'device': self.device}
@@ -59,7 +62,9 @@ class DemoSys():
 
         # load IFT/OFT detector
         #model, transform = get_gazelle_model(config)
-        model, transform = get_gt360_model(config)
+        #model, transform = get_gt360_model(config)
+        model, transform = get_gazemoe_model(config)
+
         # load a pre-trained model
         #model.load_state_dict(torch.load(model_gt, map_location=self.device, weights_only=False)['model_state_dict'])
         model.load_gazelle_state_dict(torch.load(model_gt, weights_only=True, map_location=torch.device(self.device)))
@@ -177,7 +182,7 @@ class DemoSys():
 
         if self.savefigs and not fig_saved_token:
             if imgname is None:
-                frame2show.convert("RGB").save(join(outdir, "gt360_" + self.saved_path))
+                frame2show.convert("RGB").save(join(outdir, "MoE_" + self.saved_path))
             else:
                 frame2show.convert("RGB").save(join(outdir, imgname + '.png'))
 
@@ -240,13 +245,14 @@ class DemoSys():
 
 
 if __name__ == "__main__":
-    
-    demo = DemoSys(model_gt="best_shared_epoch_4.pt")
+    the_model = "vatMoE.pt"  #"best_shared_epoch_4.pt"
+    demo = DemoSys(model_gt=the_model)
 
     #img_path = "data/WALIexample0.png"
     #img_path = "data/WALIHRIexample1.png"
     #img_path = "data/WALIHRIexample2.png"
     #img_path = "data/WALIHRIexample3.png"
+    #img_path = "data/WALIexample4.jpg"
     #img_path = "data/joye.jpg"
     #img_path = "data/0028_2m_-15P_10V_5H.jpg"
     #img_path = "data/0028_2m_30P_0V_0H.jpg"
@@ -259,9 +265,10 @@ if __name__ == "__main__":
     #img_path = "data/0000051.jpg"
     #img_path = "data/0000000.jpg"
     #img_path = "data/00004218.jpg"
-    img_path = "data/00000033.jpg"
+    #img_path = "data/00000033.jpg"
+    img_path = "data/trump_demo.mp400001.jpg"
 
-    ec_results, heatmap_results = demo.conditional_inference(img_path)
+    ec_results, heatmap_results = demo.conditional_inference(img_path, threshold=1.001)
 
     print(ec_results.keys(), heatmap_results.keys())
 
