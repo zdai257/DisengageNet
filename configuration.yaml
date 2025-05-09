@@ -37,11 +37,11 @@ data:
 train:
   # VAT finetuning hyperparams
   batch_size: 36                    # Batch size for training
-  epochs: 15                    # Number of training epochs
-  lr: 0.00001                         # 0.00001 for VAt; 0.0001 for ChildPlay
-  inout_lr: 0.001
-  fuse_lr: 0.00001
-  block_lr: 0.00001
+  epochs: 5                    # Number of training epochs
+  lr: 0.0001                         # 0.00001 for VAt; 0.0001 for ChildPlay
+  inout_lr: 0.0002
+  fuse_lr: 0.0001
+  block_lr: 0.0001
   layer_decay: 0                    # 0 or 1
   optimizer: "Adam"                # Optimizer type (adam, adamw, sgd, etc.)
   weight_decay: 0.01                # Weight decay for optimizer
@@ -72,7 +72,7 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/VATGazeMoE/"           # auto naming
+  log_dir: "results/CP_GazeMoE/"           # auto naming
   pre_dir: "results/pretrainGazeMoE/"
   save_every: 5
 
