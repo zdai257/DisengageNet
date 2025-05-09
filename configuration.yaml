@@ -1,21 +1,21 @@
 # General Configuration
 model:
   name: "gazemoe_dinov2_vitl14_inout"  # "gazelle_dinov2_vitl14_inout" OR "gazemoe_dinov2_vitl14_inout"
-  pretrained_path: "pretrainShared_epoch_14.pt"  #"pretrainShared_epoch_14.pt" or "gazelle_dinov2_vitl14_inout.pt"
-  mlp_ratio: 4  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size [1, 2, 4]
+  pretrained_path: "pretrainMoE_MSF1_best.pt"  #"pretrainShared_epoch_14.pt" or "gazelle_dinov2_vitl14_inout.pt"
+  mlp_ratio: 1  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size [1, 2, 4]
   num_experts: 4  # Routed experts [3, 4, 6]
   num_shared_experts: 1  # Shared experts [1, 2]
   top_k: 2  # [1, 2]
   moe_type: "moe"  # vanilla / shared / else (moe)
-  is_msf: 3  # [2, 3, 4, 5]
+  is_msf: 1  # [2, 3, 4, 5]
   is_focal_loss: 1  # if using FocalLoss for class balancing
   pbce_loss: "hybrid"  #"mse" or "bce" or "hybrid"
   reduction: "mean"  #"mean" or "none"
   bce_weight: 1.0  # 0.1 for ChildPlay
-  mse_weight: 180.0
+  mse_weight: 0.0
   angle_weight: 0.0  # 0.05 / 0.1
   vec_weight: 0.0
-  kld_weight: 0.02  # 0.01, 0.02, 0.05, 0.1 [0.0, 0.02, 0.05, 0.1]
+  kld_weight: 0.0  # 0.01, 0.02, 0.05, 0.1 [0.0, 0.02, 0.05, 0.1]
   encoder:
     type: "DINOv2"   # backbone: DINOv2, ViT-B/16, ViT-L/14
     pretrained: true                # Use pretrained weights
@@ -32,16 +32,16 @@ data:
   pre_train_path: "./gazefollow_extended"
   pre_test_path: "./gazefollow_extended"
   # [["crop"], ["crop", "photometric"], ["crop", "rotation"], ["crop", "photometric", "rotation"]]
-  augmentations: ["crop", "photometric", "rotation"]
+  augmentations: ["crop", "photometric"]
 
 train:
   # VAT finetuning hyperparams
-  batch_size: 6                    # Batch size for training
-  epochs: 10                    # Number of training epochs
-  lr: 0.0001                         # 0.00001 for VAt; 0.0001 for ChildPlay
-  inout_lr: 0.0002
-  fuse_lr: 0.0001
-  block_lr: 0.0001
+  batch_size: 36                    # Batch size for training
+  epochs: 15                    # Number of training epochs
+  lr: 0.00001                         # 0.00001 for VAt; 0.0001 for ChildPlay
+  inout_lr: 0.001
+  fuse_lr: 0.00001
+  block_lr: 0.00001
   layer_decay: 0                    # 0 or 1
   optimizer: "Adam"                # Optimizer type (adam, adamw, sgd, etc.)
   weight_decay: 0.01                # Weight decay for optimizer
@@ -56,7 +56,7 @@ train:
   pre_fuse_lr: 0.001
   pre_block_lr: 0.001
   pre_batch_size: 60   # 60
-  pre_epochs: 20   # 15
+  pre_epochs: 15   # 15
   pre_optimizer: "Adam"
   pre_lr_scheduler:
     type: "cosine"                  # cosine / linear
@@ -72,8 +72,8 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/ChildPlay_shared_focal/"           # auto naming
-  pre_dir: "results/pretrainMoE/"
+  log_dir: "results/VATGazeMoE/"           # auto naming
+  pre_dir: "results/pretrainGazeMoE/"
   save_every: 5
 
 hardware:

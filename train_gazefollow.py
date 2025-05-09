@@ -248,7 +248,7 @@ def main():
     elif config['model']['pbce_loss'] == "bce":
         loss_fn = torch.nn.BCELoss()
     elif config['model']['pbce_loss'] == "hybrid":
-        loss_fn = HybridLoss(bce_weight=config['model']['bce_weight'], mse_weight=0.0, kld_weight=config['model']['kld_weight'])
+        loss_fn = HybridLoss(bce_weight=config['model']['bce_weight'], mse_weight=config['model']['mse_weight'], kld_weight=config['model']['kld_weight'])
     else:
         raise TypeError("Loss not supported!")
 
