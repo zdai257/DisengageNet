@@ -11,6 +11,7 @@ from sklearn.metrics import average_precision_score
 import torch
 import torch.nn as nn
 from torch.optim import RMSprop, Adam, AdamW
+from torchvision import transforms
 import wandb
 from tqdm import tqdm
 from network.network_builder import get_gazelle_model
@@ -71,13 +72,26 @@ class GF360Dataset(torch.utils.data.dataset.Dataset):
                 img, bbox, gazex, gazey = utils.horiz_flip(img, bbox, gazex, gazey, 1)
             if np.random.sample() <= 0.5:
                 bbox = utils.random_bbox_jitter(img, bbox)
-            # TODO more augmentations
 
             # update width and height and re-normalize
             width, height = img.size
             bbox_norm = [bbox[0] / width, bbox[1] / height, bbox[2] / width, bbox[3] / height]
             gazex_norm = [x / float(width) for x in gazex]
             gazey_norm = [y / float(height) for y in gazey]
+
+            if np.random.sample() <= 0.5 and 'photometric' in self.aug_groups:
+                photometric_transforms = transforms.Compose([
+                    transforms.RandomApply(
+                    [transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1)], p=0.5),
+                    transforms.RandomGrayscale(p=0.2),
+                    #transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0)),  # kernel size can be adjusted
+                    #transforms.RandomSolarize(threshold=128, p=0.1),
+                    #transforms.RandomPosterize(bits=4, p=0.1),  # Reduce to 4 bits per channel
+                    transforms.RandomAdjustSharpness(sharpness_factor=1.5, p=0.1),
+                    transforms.RandomAutocontrast(p=0.1),
+                    #transforms.RandomEqualize(p=0.1),
+                ])
+                img = photometric_transforms(img)
         else:
             bbox_norm = [bbox[0] / width, bbox[1] / height, bbox[2] / width, bbox[3] / height]
 

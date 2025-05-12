@@ -12,7 +12,7 @@ import json
 import sys
 import dlib
 from network.network_builder import get_gazelle_model
-from network.network_builder_update2 import get_gt360_model
+from network.network_builder_update2 import get_gt360_model, get_gazemoe_model
 from eval import eval_metrics, eval_metrics_eyediap, eval_metrics_eyediap2
 
 
@@ -146,9 +146,11 @@ if __name__ == "__main__":
 
     # select Network
     #model, gazelle_transform = get_gazelle_model(config)
-    model, gazelle_transform = get_gt360_model(config)
+    #model, gazelle_transform = get_gt360_model(config)
+    model, gazelle_transform = get_gazemoe_model(config)
+
     # load a pre-trained model
-    model.load_state_dict(torch.load(config['model']['pretrained_path'], map_location=device, weights_only=True))
+    model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], map_location=device, weights_only=True))
     # load from public pre-trained
     #model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'],  weights_only=True, map_location=device), 
     #                              include_backbone=False)

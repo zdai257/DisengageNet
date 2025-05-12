@@ -94,23 +94,32 @@ def frames_to_video(frames_folder, output_video, fps=20):
 
 
 if __name__ == "__main__":
+    id = 7
 
-    input_video = "trump_demo.mp4"  #"TVSeries_dataset_example.mp4"  #"master1.mkv"
-    output_clip = "clip_" + input_video  #"youtube1_clip.mp4"  #"master1_clip.mp4"
+    # "../ChildPlay-gaze/clips/4ktkxv1aNS8_1-1629.mp4"
+    # "../ChildPlay-gaze/clips/G0NLcryxxgE_1282-1392.mp4"
+    # "../ChildPlay-gaze/clips/IMrKEA2j278_4931-5209.mp4"
+    # "../ChildPlay-gaze/clips/ljahBVDaBNE_15103-15857.mp4"
+    # "truck_demo.mp4"
+    # "trump_demo.mp4"
+    # #"TVSeries_dataset_example.mp4"
+    # #"master1.mkv"
+    input_video = "../ChildPlay-gaze/clips/IMrKEA2j278_4931-5209.mp4"
+    output_clip = "clip_" + input_video.split('/')[-1]  #"youtube1_clip.mp4"  #"master1_clip.mp4"
 
-    output_video = "moe_trump1.mp4"
+    output_video = "MoEdemo_" + input_video.split('/')[-1]
 
     # Run the pipeline
     # 1. extract a section
-    extract_clip(input_video, output_clip, start_time=215, duration=10)
+    extract_clip(input_video, output_clip, start_time=0, duration=6)
     # 2. extract frames to a folder
-    outdir = 'MoEFrames1'
-    viddir = 'MoEdemo1'
+    outdir = f'MoEFrames{id}'
+    viddir = f'MoEdemo{id}'
     extract_frames(output_clip, output_folder=outdir)
     # 3. get inferred frames to a new clip
 
     process_frames(input_folder=outdir, output_folder=viddir)
 
-    frames_to_video(frames_folder=join(viddir), output_video=output_video)
+    frames_to_video(frames_folder=join(viddir), output_video=output_video, fps=24)
 
     print("Demo video saved as:", output_video)

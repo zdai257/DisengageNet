@@ -16,6 +16,8 @@ from network.network_builder_update2 import get_gt360_model, get_gazemoe_model
 from network.ec_network_builder import get_ec_model
 from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3
 
+EC_THRES = 1.001
+
 
 CNN_FACE_MODEL = 'model/mmod_human_face_detector.dat'  # from http://dlib.net/files/mmod_human_face_detector.dat.bz2
 MODEL_WEIGHTS = 'model/model_weights.pkl'
@@ -74,7 +76,7 @@ class DemoSys():
         self.model_gt.to(self.device)
         self.model_gt.eval()
 
-    def conditional_inference(self, input_data, threshold=0.85, outdir='processed', imgname=None):
+    def conditional_inference(self, input_data, threshold=EC_THRES, outdir='processed', imgname=None):
         fig_saved_token = False
 
         frame = Image.open(input_data).convert("RGB")
@@ -146,7 +148,7 @@ class DemoSys():
                         pred_y = pred_y / 64.
                         x, y = float(pred_x), float(pred_y)
 
-                        viz = visualize_heatmap3(frame, heatmap, bbox=bbox_norm, xy=(x * w, y * h),
+                        viz = visualize_heatmap3(frame, heatmap, bbox=bbox_norm, xy=(x * w, y * h), color="lime",
                                                  dilation_kernel=5, blur_radius=1.3, transparent_bg=True)
 
                         viz_overlays.append(viz)
@@ -245,7 +247,7 @@ class DemoSys():
 
 
 if __name__ == "__main__":
-    the_model = "vatMoE.pt"  #"best_shared_epoch_4.pt"
+    the_model = "vatMoE.pt"  #"vatMoE.pt" or "pretrainMoE_MSF1_best.pt"
     demo = DemoSys(model_gt=the_model)
 
     #img_path = "data/WALIexample0.png"
@@ -266,9 +268,11 @@ if __name__ == "__main__":
     #img_path = "data/0000000.jpg"
     #img_path = "data/00004218.jpg"
     #img_path = "data/00000033.jpg"
-    img_path = "data/trump_demo.mp400001.jpg"
+    #img_path = "data/trump_demo.mp400001.jpg"
 
-    ec_results, heatmap_results = demo.conditional_inference(img_path, threshold=1.001)
+    img_path = "data/00006630.jpg"
+
+    ec_results, heatmap_results = demo.conditional_inference(img_path, threshold=1.001, imgname=img_path.split('/')[-1])
 
     print(ec_results.keys(), heatmap_results.keys())
 
