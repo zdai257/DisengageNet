@@ -181,7 +181,7 @@ def main():
     print("ChildPlay checkpoint saved at: ", exp_dir)
 
     # load pretrained model
-    # model, transform = get_gazelle_model(config)
+    #model, transform = get_gazelle_model(config)
     model, transform = get_gazemoe_model(config)
 
     print("Loading model from {}".format(config['model']['pretrained_path']))
@@ -259,7 +259,7 @@ def main():
         raise TypeError("Loss not supported!")
 
     if config['model']['is_focal_loss'] == 1:
-        inout_loss_fn = FocalLoss(alpha=0.06, gamma=2.0)
+        inout_loss_fn = FocalLoss(alpha=0.25, gamma=2.0)
     else:
         inout_loss_fn = nn.BCELoss()
 

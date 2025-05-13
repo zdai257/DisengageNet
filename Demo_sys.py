@@ -2,6 +2,7 @@ import os
 os.environ["XFORMERS_DISABLE_MEMORY_EFFICIENT_ATTENTION"] = "1"
 from os.path import join
 import sys
+import time
 import torch
 import torch.nn.functional as F
 from torchvision import transforms
@@ -15,6 +16,7 @@ from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model, get_gazemoe_model
 from network.ec_network_builder import get_ec_model
 from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3
+import torch.profiler
 
 EC_THRES = 1.001
 
@@ -239,7 +241,23 @@ class DemoSys():
             "bboxes": [bboxes]
         }
         
-        output = self.model_gt(input)
+        with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            profile_memory=True
+        ) as prof:
+            
+            #for _ in range(5):  # warmup
+            #    _ = self.model_gt(input)
+
+            torch.cuda.synchronize()
+            start = time.time()
+
+            output = self.model_gt(input)
+
+            torch.cuda.synchronize()  # Make sure all CUDA ops are done
+            end = time.time()
+            #print(f"Total inference latency: {(end - start) * 1000:.3f} ms")
+        #print(prof.key_averages().table(sort_by="self_cuda_memory_usage"))
 
         # convert output to Visualizalbe heatmap
 
@@ -247,7 +265,7 @@ class DemoSys():
 
 
 if __name__ == "__main__":
-    the_model = "vatMoE.pt"  #"vatMoE.pt" or "pretrainMoE_MSF1_best.pt"
+    the_model = "vatMoE.pt"  #"vatMoE.pt" or "pretrainMoE_MSF1_best.pt" or "GF360MoE_epoch_7.pt"
     demo = DemoSys(model_gt=the_model)
 
     #img_path = "data/WALIexample0.png"
@@ -270,7 +288,7 @@ if __name__ == "__main__":
     #img_path = "data/00000033.jpg"
     #img_path = "data/trump_demo.mp400001.jpg"
 
-    img_path = "data/00006630.jpg"
+    img_path = "data/0000867.jpg"
 
     ec_results, heatmap_results = demo.conditional_inference(img_path, threshold=1.001, imgname=img_path.split('/')[-1])
 

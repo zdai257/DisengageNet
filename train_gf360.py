@@ -27,11 +27,12 @@ def load_data_gazefollow(file):
 
 
 class GF360Dataset(torch.utils.data.dataset.Dataset):
-    def __init__(self, dataset_name, path, split, transform, in_frame_only=True):
+    def __init__(self, dataset_name, path, split, transform, in_frame_only=True, aug_groups=None):
         self.dataset_name = dataset_name
         self.path = path
         self.split = split
         self.aug = self.split == "train"
+        self.aug_groups = aug_groups if aug_groups is not None else []
         self.transform = transform
         self.in_frame_only = in_frame_only
 
@@ -159,8 +160,8 @@ def main():
     for param in model.backbone.parameters():  # freeze backbone
         param.requires_grad = False
     print(f"Learnable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
-
-    train_dataset = GF360Dataset('gf360', 'GazeFollow360', 'train', transform, in_frame_only=True)
+    # TODO currently only consider in_frame_only
+    train_dataset = GF360Dataset('gf360', 'GazeFollow360', 'train', transform, in_frame_only=True, aug_groups=config['data']['augmentations'])
     train_dl = torch.utils.data.DataLoader(train_dataset,
                                            batch_size=config['train']['batch_size'],
                                            shuffle=True,

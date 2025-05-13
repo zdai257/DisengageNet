@@ -9,9 +9,9 @@ model:
   moe_type: "moe"  # vanilla / shared / else (moe)
   is_msf: 1  # [2, 3, 4, 5]
   is_focal_loss: 1  # if using FocalLoss for class balancing
-  pbce_loss: "hybrid"  #"mse" or "bce" or "hybrid"
+  pbce_loss: "bce"  #"mse" or "bce" or "hybrid"
   reduction: "mean"  #"mean" or "none"
-  bce_weight: 0.1  # 0.1 for ChildPlay
+  bce_weight: 1.0  # 0.1 for ChildPlay
   mse_weight: 0.0
   angle_weight: 0.0  # 0.05 / 0.1
   vec_weight: 0.0
@@ -36,12 +36,12 @@ data:
 
 train:
   # VAT finetuning hyperparams
-  batch_size: 36                    # Batch size for training
-  epochs: 5                    # Number of training epochs
-  lr: 0.00001                         # 0.00001 for VAt; 0.0001 for ChildPlay
-  inout_lr: 0.0001
-  fuse_lr: 0.00001
-  block_lr: 0.00001
+  batch_size: 48                    # Batch size for training
+  epochs: 15                    # Number of training epochs
+  lr: 0.0001                         # 0.00001 for VAt; 0.0001 for ChildPlay
+  inout_lr: 0.001
+  fuse_lr: 0.0001
+  block_lr: 0.0001
   layer_decay: 0                    # 0 or 1
   optimizer: "Adam"                # Optimizer type (adam, adamw, sgd, etc.)
   weight_decay: 0.01                # Weight decay for optimizer
@@ -72,7 +72,7 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/CP_GazeMoE/"           # auto naming
+  log_dir: "results/GF360_GazeMoE_lr1e-4/"           # auto naming
   pre_dir: "results/pretrainGazeMoE/"
   save_every: 5
 
