@@ -17,4 +17,5 @@ data/
 *.png
 *.mkv
 *.mp4
-
+wandb/
+gazefollow_extended/

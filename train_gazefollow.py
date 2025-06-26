@@ -1,125 +1,190 @@
-import argparse
 import torch
 import torch.nn.functional as F
 from torch.optim import RMSprop, Adam, AdamW
 from torch.optim.lr_scheduler import StepLR
 from torchvision import transforms
-from torchvision.transforms import Compose, ToTensor
 import torchvision.transforms.functional as TF
 from PIL import Image
 import json
 import os
 from os.path import join
+import copy
 import numpy as np
 from tqdm import tqdm
 import yaml
-
+import random
+import wandb
 from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model
-from eval import eval_pretrain_gazefollow
+import network.utils as utils
+from eval import eval_pretrain_gazefollow, gazefollow_auc, gazefollow_l2
 
 
-class GazeFollow(torch.utils.data.Dataset):
-    def __init__(self, root_path, img_transform, split='train'):
-        self.frames = json.load(open(os.path.join(root_path, "{}_preprocessed.json".format(split)), "rb"))
-        self.root_path = root_path
-        self.transform = img_transform
+def load_data_vat(file, sample_rate):
+    sequences = json.load(open(file, "r"))
+    data = []
+    for i in range(len(sequences)):
+        for j in range(0, len(sequences[i]['frames']), sample_rate):
+            data.append(sequences[i]['frames'][j])
+    return data
+
+
+def load_data_gazefollow(file):
+    data = json.load(open(file, "r"))
+    return data
+
+
+# combine BCE/MSE with KL Divergence Loss
+class HybridLoss(torch.nn.Module):
+    def __init__(self, bce_weight=1.0, mse_weight=0.0, kld_weight=0.1, kld_reduction='batchmean'):
+        super(HybridLoss, self).__init__()
+        self.bce_weight = bce_weight
+        self.mse_weight = mse_weight
+        self.kld_weight = kld_weight
+        self.kld_reduction = kld_reduction
+        self.bce_loss = torch.nn.BCELoss(reduction='mean')
+        self.mse_loss = torch.nn.MSELoss(reduction='mean')
+        self.kld_loss = torch.nn.KLDivLoss(reduction=kld_reduction)
+
+    def forward(self, pred, target):
+        loss = 0.0
+        if self.bce_weight > 0:
+            loss += self.bce_weight * self.bce_loss(pred, target)
+            # print('bce_loss ', loss)
+        if self.mse_weight > 0:
+            loss += self.mse_weight * self.mse_loss(pred, target)
+        if self.kld_weight > 0:
+            # print(pred.shape, target.shape)
+            pred_dist = pred / (pred.sum(dim=(1, 2), keepdim=True) + 1e-10)
+            target_dist = target / (target.sum(dim=(1, 2), keepdim=True) + 1e-10)
+            pred_log_dist = torch.log(pred_dist + 1e-10)
+            kld_loss = self.kld_weight * self.kld_loss(pred_log_dist, target_dist)
+            # bce_loss 0.05 ~ 0.1 ; kld_loss 2.0 ~ 2.4
+            # print("kld_loss", kld_loss)
+            loss += kld_loss
+        return loss
+
+
+class GazeDataset(torch.utils.data.dataset.Dataset):
+    def __init__(self, dataset_name, path, split, transform, in_frame_only=True, sample_rate=1, aug_groups=None):
+        self.dataset_name = dataset_name
+        self.path = path
+        self.split = split
+        self.aug = self.split == "train"
+        self.transform = transform
+        self.in_frame_only = in_frame_only
+        self.sample_rate = sample_rate
+        self.aug_groups = aug_groups if aug_groups is not None else []
+
+        if dataset_name == "gazefollow":
+            self.data = load_data_gazefollow(os.path.join(self.path, "{}_preprocessed.json".format(split)))
+        elif dataset_name == "videoattentiontarget":
+            self.data = load_data_vat(os.path.join(self.path, "{}_preprocessed.json".format(split)),
+                                      sample_rate=sample_rate)
+        else:
+            raise ValueError("Invalid dataset: {}".format(dataset_name))
+
+        self.data_idxs = []
+        for i in range(len(self.data)):
+            for j in range(len(self.data[i]['heads'])):
+                if not self.in_frame_only or self.data[i]['heads'][j]['inout'] == 1:
+                    self.data_idxs.append((i, j))
 
     def __getitem__(self, idx):
-        frame = self.frames[idx]
+        img_idx, head_idx = self.data_idxs[idx]
+        img_data = self.data[img_idx]
+        head_data = copy.deepcopy(img_data['heads'][head_idx])
+        bbox_norm = head_data['bbox_norm']
+        gazex_norm = head_data['gazex_norm']
+        gazey_norm = head_data['gazey_norm']
+        inout = head_data['inout']
 
-        image = Image.open(join(self.root_path, frame['path'])).convert("RGB")
-        image = self.transform(image)
-        h = frame['height']
-        w = frame['width']
-        bbox = frame['bbox_norm']
-        gazex = frame['gazex_norm']
-        gazey = frame['gazey_norm']
+        img_path = os.path.join(self.path, img_data['path'])
+        img = Image.open(img_path)
+        img = img.convert("RGB")
+        width, height = img.size
 
-        return image, bbox, gazex, gazey, h, w
+        if self.aug:
+            bbox = head_data['bbox']
+            gazex = head_data['gazex']
+            gazey = head_data['gazey']
+
+            if np.random.sample() <= 0.5 and 'crop' in self.aug_groups:
+                img, bbox, gazex, gazey = utils.random_crop(img, bbox, gazex, gazey, inout)
+            if np.random.sample() <= 0.5 and 'crop' in self.aug_groups:
+                img, bbox, gazex, gazey = utils.horiz_flip(img, bbox, gazex, gazey, inout)
+            # more augmentations
+            if np.random.sample() <= 0.5 and 'crop' in self.aug_groups:
+                bbox = utils.random_bbox_jitter(img, bbox)
+
+            # update width and height and re-normalize
+            width, height = img.size
+            bbox_norm = [bbox[0] / width, bbox[1] / height, bbox[2] / width, bbox[3] / height]
+            gazex_norm = [x / float(width) for x in gazex]
+            gazey_norm = [y / float(height) for y in gazey]
+
+            if np.random.sample() <= 0.5 and 'photometric' in self.aug_groups:
+                photometric_transforms = transforms.Compose([
+                    transforms.RandomApply(
+                        [transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1)], p=0.5),
+                    transforms.RandomGrayscale(p=0.2),
+                    # transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0)),  # kernel size can be adjusted
+                    # transforms.RandomSolarize(threshold=128, p=0.1),
+                    # transforms.RandomPosterize(bits=4, p=0.1),  # Reduce to 4 bits per channel
+                    transforms.RandomAdjustSharpness(sharpness_factor=1.5, p=0.1),
+                    transforms.RandomAutocontrast(p=0.1),
+                    # transforms.RandomEqualize(p=0.1),
+                ])
+                img = photometric_transforms(img)
+
+        img = self.transform(img)
+
+        if self.split == "train":  # note for training set, there is only one annotation
+            heatmap = utils.get_heatmap(gazex_norm[0], gazey_norm[0], 64, 64)
+            return img, bbox_norm, gazex_norm, gazey_norm, torch.tensor(inout), height, width, heatmap
+        else:
+            return img, bbox_norm, gazex_norm, gazey_norm, torch.tensor(inout), height, width
 
     def __len__(self):
-        return len(self.frames)
+        return len(self.data_idxs)
 
 
-def collate(batch):
-    images, bbox, gazex, gazey, height, width = zip(*batch)
-    return torch.stack(images), list(bbox), list(gazex), list(gazey), list(height), list(width)
-
-
-@torch.no_grad()
-def evaluate(config, model, val_loader, device):
-    model.eval()
-    batch_size = config['eval']['batch_size']
-
-    val_pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
-    validation_loss = 0.0
-    val_total = len(val_loader)
-
-    with tqdm(total=val_total) as pbar:
-        for images, bboxes, gazex, gazey, h, w in val_loader:
-
-            preds = model({"images": images.to(device), "bboxes": [bboxes]})
-
-            # preds = a dict of{'heatmap': list of Batch_size*tensor[head_count, 64, 64],
-            #                   'inout': list of Batch_size*tensor[head_count,] }
-
-            pred_heatmap = preds['heatmap'][0]
-
-            gt_gaze_xy = []
-            for gtxs, gtys in zip(gazex, gazey):
-                batch_size0 = len(gtxs)
-                # for GazeFollow, len should always be 1 (?!), so gtxs is no list ??
-                for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
-                    gt_heatmap = torch.zeros((64, 64))
-                    x_grid = int(gtx * 63)
-                    y_grid = int(gty * 63)
-
-                    gt_heatmap[y_grid, x_grid] = 1
-
-                gt_gaze_xy.append(gt_heatmap)
-
-            gt_heatmaps = torch.stack(gt_gaze_xy)
-
-            loss = val_pbce_loss(pred_heatmap, gt_heatmaps.to(device))
-            validation_loss += loss.item()
-
-            pbar.update(1)
-
-    return float(validation_loss / val_total)
+def collate_fn(batch):
+    transposed = list(zip(*batch))
+    return tuple(
+        torch.stack(items) if isinstance(items[0], torch.Tensor) else list(items)
+        for items in transposed
+    )
 
 
 def main():
     with open('configuration.yaml', 'r') as file:
         config = yaml.safe_load(file)
-
     device = config['hardware']['device'] if torch.cuda.is_available() else "cpu"
     print("Running on {}".format(device))
 
-    # load GazeFollow config
-    lr = config['train']['pre_lr']
-    num_epochs = config['train']['pre_epochs']
+    wandb.init(
+        project=config['model']['name'],
+        name="pretrain_gf_GT360",
+        config=config
+    )
 
-    # load network
-    model, gazelle_transform = get_gt360_model(config)
-    model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True),
-                                  include_backbone=False)
-    #model.load_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True, map_location=device))
+    checkpoint_dir = "_".join([
+        "GT360",
+        config['model']['name'],
+        config['train']['pre_optimizer'],
+        "bs" + str(config['train']['pre_batch_size']),
+        str(config['train']['pre_lr']),
+    ])
+    exp_dir = os.path.join(config['logging']['pre_dir'], checkpoint_dir)
+    os.makedirs(exp_dir, exist_ok=True)
+    print("Pretrained checkpoint saved at: ", exp_dir)
 
-    # Verify the freezing and initialization
-    for name, param in model.named_parameters():
-        #print(f"{name}: requires_grad={param.requires_grad}")
-        pass
+    # model, transform = get_gazelle_model(config)
+    model, transform = get_gt360_model(config)
+    model.to(device)
 
-    # Freeze 'backbone' parameters
-    for name, param in model.named_parameters():
-        if 'backbone' in name:
-            param.requires_grad = False  # Freeze these parameters
-        else:
-            param.requires_grad = True  # Keep these learnable
-
-    # Randomly initialize learnable parameters
-    for name, param in model.named_parameters():
+    for name, param in model.named_parameters():  # Randomly initialize learnable parameters
         break
         if param.requires_grad:  # Only initialize unfrozen parameters
             if param.dim() > 1:  # Weights
@@ -127,25 +192,33 @@ def main():
             else:  # Biases
                 torch.nn.init.zeros_(param)
 
-    # Verify the freezing and initialization
-    for name, param in model.named_parameters():
-        #print(f"{name}: requires_grad={param.requires_grad}")
-        pass
+    for param in model.backbone.parameters():  # freeze backbone
+        param.requires_grad = False
+    print(f"Learnable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
-    model.to(device)
+    train_dataset = GazeDataset('gazefollow', config['data']['pre_train_path'], 'train', transform,
+                                aug_groups=config['data']['augmentations'])
+    train_dl = torch.utils.data.DataLoader(train_dataset,
+                                           batch_size=config['train']['pre_batch_size'],
+                                           shuffle=True,
+                                           collate_fn=collate_fn,
+                                           num_workers=config['hardware']['num_workers'])
+    eval_dataset = GazeDataset('gazefollow', config['data']['pre_test_path'], 'test', transform)
+    eval_dl = torch.utils.data.DataLoader(eval_dataset,
+                                          batch_size=config['train']['pre_batch_size'],
+                                          shuffle=False,
+                                          collate_fn=collate_fn,
+                                          num_workers=config['hardware']['num_workers'])
 
-    n_parameters = sum(p.numel()
-                       for p in model.parameters() if p.requires_grad)
-    print(f"Number of params: {n_parameters}")
-    
-    # set LR
     param_dicts = []
     for n, p in model.named_parameters():
         if p.requires_grad:
-            if 'ms_fusion' in n or 'transformer' in n:
-                param_dicts.append({'params': p, 'lr': config['train']['fuse_lr']})
+            if 'ms_fusion' in n or 'linear' in n:
+                param_dicts.append({'params': p, 'lr': config['train']['pre_lr']})
+            elif 'transformer' in n:
+                param_dicts.append({'params': p, 'lr': config['train']['pre_lr']})
             else:
-                param_dicts.append({'params': p, 'lr': lr})
+                param_dicts.append({'params': p, 'lr': config['train']['pre_lr']})
 
     if config['train']['pre_optimizer'] == 'Adam':
         optimizer = Adam(param_dicts)
@@ -154,168 +227,88 @@ def main():
     else:
         raise TypeError("Optimizer not supported!")
 
-    # Cosine/linear learning rate scheduler
-    lr_step_size = config['train']['pre_lr_scheduler']['step_size']
-    gamma = config['train']['pre_lr_scheduler']['gamma']  # Factor by which the learning rate will be reduced
-    if config['train']['pre_lr_scheduler']['type'] == "cosine":
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
-                                                               T_max=100)
-        # eta_min=config['train']['lr_scheduler']['min_lr'])
-    else:  # linear lr scheduler
-        scheduler = StepLR(optimizer, step_size=lr_step_size, gamma=gamma)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
+                                                           T_max=config['train']['pre_lr_scheduler']['step_size'],
+                                                           eta_min=float(config['train']['pre_lr_scheduler']['min_lr']))
 
-    input_resolution = config['data']['input_resolution']
+    ### Auxiliary Loss ###
+    SCALAR = 1
+    # MSEloss or BCELoss
+    if config['model']['pbce_loss'] == "mse":
+        SCALAR = 36
+        loss_fn = torch.nn.MSELoss(reduction=config['model']['reduction'])
+    elif config['model']['pbce_loss'] == "bce":
+        loss_fn = torch.nn.BCELoss()
+    elif config['model']['pbce_loss'] == "hybrid":
+        loss_fn = HybridLoss(bce_weight=config['model']['bce_weight'], mse_weight=config['model']['mse_weight'],
+                             kld_weight=config['model']['kld_weight'])
+    else:
+        raise TypeError("Loss not supported!")
 
-    # transform
-    # RandomCrop + flip + BBox Jitter (?)
-    transform_list = []
-    #transform_list.append(transforms.RandomResizedCrop((input_resolution, input_resolution)))
-    # TODO: deal with flipped bbox labels
-    # transform_list.append(transforms.RandomHorizontalFlip(0.5))
-    transform_list.append(transforms.ToTensor())
-    transform_list.append(transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
-    transform_list.append(transforms.Resize(input_resolution))
-    my_transform = transforms.Compose(transform_list)
+    best_min_l2 = 1.0
+    best_epoch = None
 
-    my_transform = gazelle_transform
-
-    # apply my_transform
-    train_dataset = GazeFollow(root_path=config['data']['pre_train_path'],
-                               img_transform=my_transform,
-                               split='train')
-    test_dataset = GazeFollow(root_path=config['data']['pre_test_path'],
-                              img_transform=my_transform,
-                              split='test')
-
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=config['train']['pre_batch_size'],
-        collate_fn=collate,
-        # shuffle=True,
-        num_workers=config['hardware']['num_workers'],
-        pin_memory=config['hardware']['pin_memory']
-    )
-    test_loader = torch.utils.data.DataLoader(
-        test_dataset,
-        batch_size=config['eval']['batch_size'],
-        collate_fn=collate,
-        # shuffle=True,
-        num_workers=config['hardware']['num_workers'],
-        pin_memory=config['hardware']['pin_memory']
-    )
-
-    #train_length = train_dataset.__len__()
-
-    #mse_loss = torch.nn.MSELoss(reduction='sum')  # Mean Squared Error Loss
-    # Pixel wise binary CrossEntropy loss
-    pbce_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
-
-    # save dir for checkpoints
-    os.makedirs(config['logging']['pre_dir'], exist_ok=True)
-
-    best_loss = float('inf')
-    early_stop_count = 0
-    best_checkpoint_path = None
-    batch_size = config['train']['pre_batch_size']
-
-    # START TRAINING
     for epoch in range(config['train']['pre_epochs']):
-        model.train(True)
-        epoch_loss = 0.
+        # TRAIN EPOCH
+        model.train()
+        for cur_iter, batch in tqdm(enumerate(train_dl), total=len(train_dl)):
+            imgs, bboxes, gazex, gazey, inout, heights, widths, heatmaps = batch
 
-        for batch, (images, bboxes, gazex, gazey, h, w) in tqdm(enumerate(train_loader), total=len(train_loader)):
-
-            # forward pass
-            preds = model({"images": images.to(device), "bboxes": [bboxes]})
-
-            # preds = a dict of{'heatmap': list of head_count *tensor[Batch_size, 64, 64],
-            #                   'inout': list of head_count *tensor[Batch_size,] }
-
-            pred_heatmap = preds['heatmap'][0]
-
-            gt_gaze_xy = []
-            for gtxs, gtys in zip(gazex, gazey):
-                batch_size0 = len(gtxs)
-                # for GazeFollow, len should always be 1 (?!), so gtxs is no list ??
-                for i, (gtx, gty) in enumerate(zip(gtxs, gtys)):
-                    gt_heatmap = torch.zeros((64, 64))
-                    x_grid = int(gtx * 63)
-                    y_grid = int(gty * 63)
-
-                    gt_heatmap[y_grid, x_grid] = 1
-
-                gt_gaze_xy.append(gt_heatmap)
-
-            gt_heatmaps = torch.stack(gt_gaze_xy)
-
-            loss = pbce_loss(pred_heatmap, gt_heatmaps.to(device))
-
-            # Backpropagation and optimization
             optimizer.zero_grad()
+            preds = model({"images": imgs.to(device), "bboxes": [[bbox] for bbox in bboxes]})
+            heatmap_preds = torch.stack(preds['heatmap']).squeeze(dim=1)
+
+            loss = SCALAR * loss_fn(heatmap_preds, heatmaps.to(device))
             loss.backward()
-            #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Clip exploding gradients
             optimizer.step()
 
-            # Accumulate loss for reporting
-            epoch_loss += loss.item()
+            if cur_iter % config['logging']['save_every'] == 0:
+                wandb.log({"train/loss": loss.item()})
+                # print("TRAIN EPOCH {}, iter {}/{}, loss={}".format(epoch, cur_iter, len(train_dl), round(loss.item(), 4)))
 
         scheduler.step()
 
-        mean_ep_loss = epoch_loss / len(train_loader)
-        # Print epoch loss
-        print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {mean_ep_loss:.7f}")
+        ckpt_path = os.path.join(exp_dir, 'epoch_{}.pt'.format(epoch))
+        torch.save(model.get_gazelle_state_dict(), ckpt_path)
+        print("Saved checkpoint to {}".format(ckpt_path))
 
-        val_loss = evaluate(config, model, test_loader, device)
+        # EVAL
+        model.eval()
+        avg_l2s = []
+        min_l2s = []
+        aucs = []
+        for cur_iter, batch in tqdm(enumerate(eval_dl), total=len(eval_dl)):
+            imgs, bboxes, gazex, gazey, inout, heights, widths = batch
 
-        print(f"Epoch [{epoch + 1}/{num_epochs}], Validation Loss: {val_loss:.7f}")
+            with torch.no_grad():
+                preds = model({"images": imgs.to(device), "bboxes": [[bbox] for bbox in bboxes]})
 
-        # Save model every 5 epochs
-        if (epoch + 1) % config['logging']['save_every'] == 0:
-            checkpoint_path = os.path.join(config['logging']['pre_dir'], f"model_epoch_{epoch + 1}.pt")
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler': scheduler.state_dict(),
-                'loss': val_loss
-            }, checkpoint_path)
-            print(f"Checkpoint saved at {checkpoint_path}")
+            heatmap_preds = torch.stack(preds['heatmap']).squeeze(dim=1)
+            for i in range(heatmap_preds.shape[0]):
+                auc = gazefollow_auc(heatmap_preds[i], gazex[i], gazey[i], heights[i], widths[i])
+                avg_l2, min_l2 = gazefollow_l2(heatmap_preds[i], gazex[i], gazey[i])
+                aucs.append(auc)
+                avg_l2s.append(avg_l2)
+                min_l2s.append(min_l2)
 
-        # Save best model based on VAL_LOSS
-        if val_loss < best_loss and epoch > 5:
-            best_loss = val_loss
-            checkpoint_path = os.path.join(config['logging']['pre_dir'], f"best_epoch_{epoch + 1}.pt")
-            best_checkpoint_path = checkpoint_path
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler': scheduler.state_dict(),
-                'loss': best_loss
-            }, checkpoint_path)
-            print(f"\nBest model updated at epoch {epoch + 1} with loss {best_loss:.4f}")
+        epoch_avg_l2 = np.mean(avg_l2s)
+        epoch_min_l2 = np.mean(min_l2s)
+        epoch_auc = np.mean(aucs)
 
-    # Quantitative EVAL: discuss per image, and per head in image
-    # Test best.model on metrics
-    checkpoint = torch.load(best_checkpoint_path)
-    model_state_dict = checkpoint['model_state_dict']
-    bst_ep = checkpoint['epoch']
-    bst_loss = checkpoint['loss']
+        wandb.log({"eval/auc": epoch_auc, "eval/min_l2": epoch_min_l2, "eval/avg_l2": epoch_avg_l2, "epoch": epoch})
+        print("EVAL EPOCH {}: AUC={}, Min L2={}, Avg L2={}".format(epoch, round(float(epoch_auc), 4),
+                                                                   round(float(epoch_min_l2), 4),
+                                                                   round(float(epoch_avg_l2), 4)))
 
-    with torch.no_grad():
-        model.load_state_dict(model_state_dict)
+        if epoch_min_l2 < best_min_l2:
+            best_min_l2 = epoch_min_l2
+            best_epoch = epoch
 
-        auc, meanl2, minl2 = eval_pretrain_gazefollow(config, model, test_loader, device)
-
-        best_checkpoint = os.path.join(config['logging']['pre_dir'],
-                                       f"Best_model_ep{bst_ep}_l2{int(meanl2 * 100)}_loss{int(best_loss * 100)}.pt")
-        torch.save({
-            'model_state_dict': model.state_dict(),
-            'loss': bst_loss,
-            'auc': auc,
-            'l2': meanl2
-        }, best_checkpoint)
+    print("Completed training. Best Min L2 of {} obtained at epoch {}".format(round(best_min_l2, 4), best_epoch))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
+    random.seed(0)
+    np.random.seed(0)
+    torch.manual_seed(0)
     main()
