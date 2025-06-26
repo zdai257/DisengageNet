@@ -5,21 +5,17 @@ model:
   pbce_loss: "bce"  #"mse" or "bce" or "hybrid"
   bce_weight: 1.0
   mse_weight: 0.0
+  reduction: "mean"  #"mean" or "none"
   kld_weight: 0.0  # 0.01, 0.02, 0.05, 0.1 [0.0, 0.02, 0.05, 0.1]
   is_focal_loss: 1  # if using FocalLoss for class balancing
   encoder:
-    type: "DINOv2"                  # Pretrained image encoder (DINOv2, CLIP, etc.)
+    type: "DINOv2"                  # backbone: DINOv2, ViT-B/16, ViT-L/14
     pretrained: true                # Use pretrained weights
-    input_size: 224                 # Input image size
-  decoder:
-    type: "ViT"                     # Decoder type (ViT, transformer-like)
-    hidden_size: 512                # Hidden size of the decoder
-    depth: 12                       # Number of layers in the decoder
-    num_heads: 8                    # Number of attention heads
-    mlp_ratio: 4.0                  # Ratio for MLP in ViT decoder
-    dropout: 0.1                    # Dropout rate
-    activation: "gelu"              # Activation function (relu, gelu, leaky_relu)
-    output_size: 128                # Dimension of decoder output features
+    decoder:
+      hidden_size: 256                # d_model [256, 384]
+      depth: 3                        # Number of transformer layers in the decoder (default 3) [3, 4]
+      num_heads: 8                    # Number of attention heads
+      dropout: 0.1                    # Dropout rate
 
 data:
   input_resolution: 448
@@ -59,7 +55,7 @@ train:
 
 eval:
   checkpoint: "gazelle_large_vitl14_inout.pt"  # Path to the checkpoint for evaluation
-  batch_size: 32                    # Batch size for evaluation
+  batch_size: 48                    # Batch size for evaluation
 
 logging:
   log_dir: "results/GT360_vat/"
@@ -67,6 +63,6 @@ logging:
   save_every: 5
 
 hardware:
-  device: "cuda"                    # Device to use (cuda, cpu)
+  device: "cuda:0"                    # Device to use (cuda, cpu)
   num_workers: 3                    # Number of data loader workers
   pin_memory: True                  # Pin memory for faster data loading

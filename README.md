@@ -20,7 +20,7 @@ The following libraries are required
 - dlib
 - wandb
 
-This work is inspired by [Gaze-LLE](https://github.com/fkryan/gazelle/tree/main?tab=readme-ov-file) model. You can create their conda environment provided then install *dlib* library. You will need to download [VideoAttentionTarget](https://github.com/ejcgt/attention-target-detection) dataset in /VAT and [GazeFollow](https://huggingface.co/datasets/ShijianDeng/gazefollow) dataset in /gazefollow_extended under the root folder for training.
+This work is inspired by [Gaze-LLE](https://github.com/fkryan/gazelle/tree/main?tab=readme-ov-file) model. You can create their conda environment provided then install *dlib* library. You will need to download [VideoAttentionTarget](https://github.com/ejcgt/attention-target-detection) dataset in /VAT and [GazeFollow](https://www.dropbox.com/scl/fi/n45q7wig1rvrqf8hsomuw/gazefollow_extended.zip?rlkey=e5b54qgppse4xfk4wc6j2zj2f&e=1&dl=0) dataset in /gazefollow_extended under the root folder for training.
 
 ## Steps
 
