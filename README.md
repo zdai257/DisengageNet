@@ -17,7 +17,7 @@ The following libraries are required
 - Python = 3.11
 - pytorch = 2.5.1
 - torchvision = 0.20.1
-- dlib
+- dlib (OR transformers)
 - wandb
 
 This work is inspired by [Gaze-LLE](https://github.com/fkryan/gazelle/tree/main?tab=readme-ov-file) model. You can create their conda environment provided then install *dlib* library. You will need to download [VideoAttentionTarget](https://github.com/ejcgt/attention-target-detection) dataset in /VAT and [GazeFollow](https://www.dropbox.com/scl/fi/n45q7wig1rvrqf8hsomuw/gazefollow_extended.zip?rlkey=e5b54qgppse4xfk4wc6j2zj2f&e=1&dl=0) dataset in /gazefollow_extended under the root folder for training.
@@ -43,6 +43,10 @@ To infer gaze targets, run the following command to obtain eye-contact, in-frame
 ```base
 python Demo_sys.py
 ```
+
+OR run *Demo_detr.py* to use a DETr-based face detection front end.
+
+Trained [models](https://drive.google.com/drive/folders/1_JR-gMJtT1pV00BsO_0Q1Y6PA1qNzSkq?usp=sharing) of GT360 are released.
 
 ![openingfig](https://github.com/zdai257/DisengageNet/blob/main/processed/demo0.jpg)
 

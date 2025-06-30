@@ -1,7 +1,7 @@
 # General Configuration
 model:
   name: "gazelle_dinov2_vitl14_inout"
-  pretrained_path: "best_shared_epoch_14.pt"
+  pretrained_path: "GT360_vat.pt"
   pbce_loss: "bce"  #"mse" or "bce" or "hybrid"
   bce_weight: 1.0
   mse_weight: 0.0

@@ -8,6 +8,8 @@ MPIIFaceGaze/
 Columbia/
 GazeFollow/
 EYEDIAP/
+ChildPlay-gaze/
+GazeFollow360/
 results/
 data/
 *.parquet
