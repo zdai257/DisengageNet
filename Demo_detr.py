@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torchvision import transforms
 import numpy as np
 from PIL import Image, ImageDraw
-from transformers import YolosFeatureExtractor, YolosForObjectDetection
+from transformers import YolosFeatureExtractor, YolosForObjectDetection, pipeline
 import matplotlib.pyplot as plt
 from network.network_builder import get_gazelle_model
 #from network.network_builder_update import get_gt360_model
@@ -77,6 +77,8 @@ class DemoSys():
         overlays = []
         viz_overlays = []
 
+        gaze_targets = []
+
         with torch.no_grad():
             
             ec_prob, bboxes = self.ec_infer(frame, bbox_scalar=0.2)
@@ -131,6 +133,8 @@ class DemoSys():
                         pred_y = pred_y / 64.
                         x, y = float(pred_x), float(pred_y)
 
+                        gaze_targets.append((x, y))
+
                         viz = visualize_heatmap3(frame, heatmap, bbox=bbox_norm, xy=(x * w, y * h),
                                                  dilation_kernel=5, blur_radius=1.3, transparent_bg=True)
 
@@ -171,7 +175,7 @@ class DemoSys():
             else:
                 frame2show.convert("RGB").save(join(outdir, imgname + '.png'))
 
-        return ecs, heatmaps
+        return ecs, heatmaps, gaze_targets
         
     def ec_infer(self, frame, bbox_scalar=0.2):
         bboxes = []
@@ -260,7 +264,20 @@ if __name__ == "__main__":
     #img_path = "data/00004218.jpg"
     img_path = "data/00000033.jpg"
 
-    ec_results, heatmap_results = demo.conditional_inference(img_path)
+    ec_results, heatmap_results, gaze_targets = demo.conditional_inference(img_path)
+
+    # naive depth
+    pipe = pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Large-hf")
+    
+    frame = Image.open(img_path).convert("RGB")
+    height, width = frame.height, frame.width
+    x_rel, y_rel = gaze_targets[0][0], gaze_targets[0][1]
+    x_abs = min(max(int(x_rel * width), 0), width - 1)
+    y_abs = min(max(int(y_rel * height), 0), height - 1)
+    depth = pipe(frame)['depth']
+
+    depth_value = np.array(depth)[y_abs, x_abs]
+    print(f"Depth at ({x_rel}, {y_rel}) -> pixel ({x_abs}, {y_abs}): {depth_value}")
 
     print(ec_results.keys(), heatmap_results.keys())
 

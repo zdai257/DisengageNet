@@ -2,6 +2,7 @@ import os
 os.environ["XFORMERS_DISABLE_MEMORY_EFFICIENT_ATTENTION"] = "1"
 from os.path import join
 import sys
+import time
 import torch
 import torch.nn.functional as F
 from torchvision import transforms
@@ -14,6 +15,7 @@ from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gt360_model
 from network.ec_network_builder import get_ec_model
 from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3
+import torch.profiler
 
 
 CNN_FACE_MODEL = 'model/mmod_human_face_detector.dat'  # from http://dlib.net/files/mmod_human_face_detector.dat.bz2
@@ -232,7 +234,23 @@ class DemoSys():
             "bboxes": [bboxes]
         }
         
-        output = self.model_gt(input)
+        with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            profile_memory=True
+        ) as prof:
+            
+            for _ in range(5):  # warmup
+                _ = self.model_gt(input)
+
+            torch.cuda.synchronize()
+            start = time.time()
+
+            output = self.model_gt(input)
+
+            torch.cuda.synchronize()  # Make sure all CUDA ops are done
+            end = time.time()
+            print(f"Total inference latency: {(end - start) * 1000:.3f} ms")
+        print(prof.key_averages().table(sort_by="self_cuda_memory_usage"))
 
         # convert output to Visualizalbe heatmap
 
@@ -241,7 +259,7 @@ class DemoSys():
 
 if __name__ == "__main__":
     
-    demo = DemoSys(model_gt="best_shared_epoch_4.pt")
+    demo = DemoSys(model_gt="GT360_vat.pt")
 
     #img_path = "data/WALIexample0.png"
     #img_path = "data/WALIHRIexample1.png"
