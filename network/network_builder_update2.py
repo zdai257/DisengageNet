@@ -5,7 +5,7 @@ from timm.models.vision_transformer import Block
 import math
 import yaml
 import network.utils as utils
-from network.backbone import DinoV2Backbone
+from network.backbone import DinoV2Backbone, DinoV3Backbone
 
 #############################################
 # Transformer Block Alternatives
@@ -130,6 +130,33 @@ class DinoV2BackboneMultiScale(nn.Module):
     def __init__(self, model_name):
         super().__init__()
         self.base_backbone = DinoV2Backbone(model_name)
+        # Here I assume the base backbone returns a single feature map,
+        # and I simulate two additional scales by downsampling.
+    
+    def forward(self, x):
+        # Obtain the original feature map [B, C, H, W]
+        features = self.base_backbone.forward(x)
+        # Simulate additional scales by downsampling
+        f1 = features  # Highest resolution (scale 1)
+        f2 = nn.functional.interpolate(features, scale_factor=0.5, mode='bilinear', align_corners=False)
+        f3 = nn.functional.interpolate(features, scale_factor=0.25, mode='bilinear', align_corners=False)
+        return [f1, f2, f3]
+    
+    def get_out_size(self, in_size):
+        return self.base_backbone.get_out_size(in_size)
+    
+    def get_multi_scale_channels(self):
+        C = self.base_backbone.get_dimension()
+        return [C, C, C]
+    
+    def get_transform(self, size):
+        return self.base_backbone.get_transform(size)
+
+# dinov3
+class DinoV3BackboneMultiScale(nn.Module):
+    def __init__(self, model_name):
+        super().__init__()
+        self.base_backbone = DinoV3Backbone(model_name)
         # Here I assume the base backbone returns a single feature map,
         # and I simulate two additional scales by downsampling.
     
@@ -360,6 +387,8 @@ def positionalencoding2d(d_model, height, width):
 
 def get_gt360_model(configuration):
     factory = {
+        "gazelle_dinov3_vitb16_inout": gazelle_dinov3_vitb16_inout,
+        "gazelle_dinov3_vitl16_inout": gazelle_dinov3_vitl16_inout,
         "gazelle_dinov2_vitb14": gazelle_dinov2_vitb14,
         "gazelle_dinov2_vitl14": gazelle_dinov2_vitl14,
         "gazelle_dinov2_vitb14_inout": gazelle_dinov2_vitb14_inout,
@@ -367,6 +396,20 @@ def get_gt360_model(configuration):
     }
     assert configuration['model']['name'] in factory.keys(), "invalid model name"
     return factory[configuration['model']['name']]()
+
+# dinov3 model
+def gazelle_dinov3_vitb16_inout(transformer_type="shared"):
+    backbone = DinoV3BackboneMultiScale('dinov3_vitb16')
+    transform = backbone.get_transform((448, 448))
+    model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)
+    return model, transform
+
+def gazelle_dinov3_vitl16_inout(transformer_type="shared"):
+    print("loading dinov3")
+    backbone = DinoV3BackboneMultiScale('dinov3_vitl16')
+    transform = backbone.get_transform((448, 448))
+    model = GazeLLE(backbone, inout=True, transformer_type=transformer_type)
+    return model, transform
 
 def gazelle_dinov2_vitb14(transformer_type="shared"):
     backbone = DinoV2BackboneMultiScale('dinov2_vitb14')

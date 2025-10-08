@@ -1,7 +1,7 @@
 # General Configuration
 model:
-  name: "gazelle_dinov2_vitl14_inout"
-  pretrained_path: "GT360_vat.pt"
+  name: "gazelle_dinov3_vitl16_inout"
+  pretrained_path: ""
   pbce_loss: "bce"  #"mse" or "bce" or "hybrid"
   bce_weight: 1.0
   mse_weight: 0.0
@@ -54,12 +54,12 @@ train:
     min_lr: 1e-7                    # Minimum learning rate for cosine/other schedulers
 
 eval:
-  checkpoint: "gazelle_large_vitl14_inout.pt"  # Path to the checkpoint for evaluation
-  batch_size: 48                    # Batch size for evaluation
+  checkpoint: "gazelle_dinov3_vitl14_inout.pt"  # Path to the checkpoint for evaluation
+  batch_size: 60                    # Batch size for evaluation
 
 logging:
-  log_dir: "results/GT360_vat/"
-  pre_dir: "results/GT360_pretrain/"
+  log_dir: "results/GT360_dinov3_vat/"
+  pre_dir: "results/GT360_dinov3_pretrain/"
   save_every: 5
 
 hardware:
