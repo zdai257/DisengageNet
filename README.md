@@ -38,7 +38,7 @@ python train_videoattentiontarget.py
 
 For ColumbiaGaze, EYEDIAP, and MPIIFaceGaze, download the datasets and use *Eval_X.py* to evaluate performance. 
 
-To infer gaze targets, run the following command to obtain eye-contact, in-frame, or out-of-frame estimation results with visualization
+To inspect gaze target estimation, run the following command to obtain eye-contact, in-frame, or out-of-frame prediction results with visualization
 
 ```base
 python Demo_sys.py
@@ -46,7 +46,15 @@ python Demo_sys.py
 
 OR run *Demo_detr.py* to use a DETr-based face detection front end.
 
-Trained [models](https://drive.google.com/drive/folders/1_JR-gMJtT1pV00BsO_0Q1Y6PA1qNzSkq?usp=sharing) of GT360 are released.
+## Usage
+
+To directly use pre-trained model for inference, simply run
+
+```base
+python run_gt360.py -i <input image/video filename> -o <output image/video GT visualization> -x <output GT .csv>
+```
+
+Trained [models](https://drive.google.com/drive/folders/1_JR-gMJtT1pV00BsO_0Q1Y6PA1qNzSkq?usp=sharing) of GT360 (_vat.pt allows IFT/OFT classification) are released for direct usage.
 
 ![openingfig](https://github.com/zdai257/DisengageNet/blob/main/processed/demo0.jpg)
 
