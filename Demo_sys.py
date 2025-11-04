@@ -30,7 +30,7 @@ if not os.path.isfile(PREDICTOR_PATH):
 
 
 class DemoSys():
-    def __init__(self, model_gt='gazelle_dinov2_vitl14_inout.pt', model_ec=MODEL_WEIGHTS, facedetect=None):
+    def __init__(self, model_gt='gazelle_dinov2_vitl14_inout.pt', model_ec=MODEL_WEIGHTS, facedetect=None, enable_profiler=False):
         self.saved_path = "GT360output.png"
         self.savefigs = 1
 
@@ -70,6 +70,7 @@ class DemoSys():
 
         self.model_gt.to(self.device)
         self.model_gt.eval()
+        self.enable_profiler = enable_profiler
 
     def conditional_inference(self, input_data, threshold=0.85, outdir='processed', imgname=None):
         fig_saved_token = False
@@ -234,27 +235,30 @@ class DemoSys():
             "bboxes": [bboxes]
         }
         
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            profile_memory=True
-        ) as prof:
-            
-            for _ in range(5):  # warmup
-                _ = self.model_gt(input)
+        if self.enable_profiler:
+            with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                profile_memory=True
+            ) as prof:
+                for _ in range(5):  # warmup
+                    _ = self.model_gt(input)
 
-            torch.cuda.synchronize()
-            start = time.time()
+                if self.device == 'cuda':
+                    torch.cuda.synchronize()
+                start = time.time()
 
+                output = self.model_gt(input)
+
+                if self.device == 'cuda':
+                    torch.cuda.synchronize()
+                end = time.time()
+                print(f"Total inference latency: {(end - start) * 1000:.3f} ms")
+            print(prof.key_averages().table(sort_by="self_cuda_memory_usage"))
+            return output
+        else:
+            # No profiler, minimal overhead
             output = self.model_gt(input)
-
-            torch.cuda.synchronize()  # Make sure all CUDA ops are done
-            end = time.time()
-            print(f"Total inference latency: {(end - start) * 1000:.3f} ms")
-        print(prof.key_averages().table(sort_by="self_cuda_memory_usage"))
-
-        # convert output to Visualizalbe heatmap
-
-        return output
+            return output
 
 
 if __name__ == "__main__":
