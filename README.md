@@ -10,6 +10,8 @@
 
 This is the software system of GazeTarget360. The aim is to estimate gaze target anywhere, incl. in-frame target (IFT), out-of-frame target (OFT), and eye-contact (EC), from a generalized visual scene. GazeTarget360 integrates conditional inference of a ResNet eye-contact [detector](https://github.com/rehg-lab/eye-contact-cnn) and a transformer encoder-decoder based gaze location estimator. GazeTarget360 makes a first-of-its-kind system to predict gaze targets from realistic camera footage for robotic perception.
 
+Please checkout **gazemoe** branch for a state-of-the-art gaze target estimation model "GazeMoE" accepted by ICRA 2026.
+
 ## Prerequisites
 
 The following libraries are required
@@ -58,6 +60,8 @@ Trained [models](https://drive.google.com/drive/folders/1_JR-gMJtT1pV00BsO_0Q1Y6
 
 ![openingfig](https://github.com/zdai257/DisengageNet/blob/main/processed/demo0.jpg)
 
+## Citation
+
 If you use our work, please cite:
 
 ```bibtex
@@ -65,11 +69,22 @@ If you use our work, please cite:
   author    = {Dai, Zhuangzhuang and Zakka, Vincent Gbouna and Manso, Luis J. and Li, Chen},
   booktitle = {IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)}, 
   title     = {GazeTarget360: Towards Gaze Target Estimation in 360-Degree for Robot Perception}, 
-  year      = {2025}
+  year      = {2025},
+  address   = {Hangzhou, China}
+}
+
+@INPROCEEDINGS{gazemoe_icra2026,
+  title     = {GazeMoE: Perception of Gaze Target with Mixture-of-Experts},
+  booktitle = {Proceedings of the IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2026},
+  publisher = {IEEE},
+  address   = {Vienna, Austria}
 }
 ```
+---
 
 ## Acknowledgements
 
 Experiments were run on Aston Engineering and Physical Science Machine Learning Server, funded by the EPSRC Core Equipment Fund, Grant EP/V036106/1.
 
+The authors would like to acknowledge support by Villum Experiment project (00058627)
