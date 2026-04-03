@@ -17,8 +17,8 @@ EYEDIAP/
 results/
 data/
 *.parquet
-.pt
-.pth
+*.pt
+*.pth
 *.jpg
 *.png
 *.mkv
