@@ -141,17 +141,19 @@ def evaluate(config, model, loader, device, loss_fns):
         pred_inouts   = torch.cat(preds["inout"], 0)
         pred_heatmaps = torch.cat(preds["heatmap"], 0)
 
+        # shapes mirror the training loop (see comments there)
         gt_hm, gt_io, bbox_ctrs, gt_xys = build_gt(bboxes, gazex, gazey, inout)
-        pred_xys   = soft_argmax(pred_heatmaps)
-        inout_mask = gt_io.to(device)
+        pred_xys   = soft_argmax(pred_heatmaps)  # [N_total, 2]
+        inout_mask = gt_io.to(device)             # [N_total]
 
-        loss0 = bce_loss(pred_inouts, gt_io.to(device))
-        loss1 = (pbce_loss(pred_heatmaps, gt_hm.to(device)) * LOSS_SCALAR
-                 ).mean([1, 2]) * inout_mask
-        loss2 = angle_loss(pred_xys - bbox_ctrs.to(device),
-                           gt_xys.to(device) - bbox_ctrs.to(device)) * inout_mask
-        loss3 = vec_loss(pred_xys - bbox_ctrs.to(device),
-                         gt_xys.to(device) - bbox_ctrs.to(device)) * inout_mask
+        loss0    = bce_loss(pred_inouts, gt_io.to(device))
+        pbce_raw = pbce_loss(pred_heatmaps, gt_hm.to(device)) * LOSS_SCALAR
+        loss1    = (pbce_raw.mean([1, 2]) * inout_mask
+                    if pbce_raw.dim() > 1 else pbce_raw)
+        loss2    = angle_loss(pred_xys - bbox_ctrs.to(device),
+                              gt_xys.to(device) - bbox_ctrs.to(device)) * inout_mask
+        loss3    = vec_loss(pred_xys - bbox_ctrs.to(device),
+                            gt_xys.to(device) - bbox_ctrs.to(device)) * inout_mask
 
         total_loss += (
             config["model"]["bce_weight"]   * loss0
@@ -312,17 +314,28 @@ def main():
         for images, bboxes, gazex, gazey, inout in tqdm(
                 train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
 
+            # images        : [B, 3, 448, 448]
+            # bboxes/gazex/y: list[B] of list[N_i] of norm coords in [0,1]
             preds = model({"images": images.to(device), "bboxes": bboxes})
-            pred_inouts   = torch.cat(preds["inout"], 0)
-            pred_heatmaps = torch.cat(preds["heatmap"], 0)
+            # preds["heatmap"]: list[B] of [N_i, 64, 64]
+            # preds["inout"] : list[B] of [N_i]
+            pred_inouts   = torch.cat(preds["inout"], 0)    # [N_total]
+            pred_heatmaps = torch.cat(preds["heatmap"], 0)  # [N_total, 64, 64]
 
+            # gt_hm       : [N_total, 64, 64]   gt_io   : [N_total]
+            # bbox_ctrs   : [N_total, 2]         gt_xys  : [N_total, 2]
             gt_hm, gt_io, bbox_ctrs, gt_xys = build_gt(bboxes, gazex, gazey, inout)
-            pred_xys   = soft_argmax(pred_heatmaps)
-            inout_mask = gt_io.to(device)
+            pred_xys   = soft_argmax(pred_heatmaps)  # [N_total, 2]
+            inout_mask = gt_io.to(device)             # [N_total]
 
+            # loss0: scalar  (inout BCE, reduction='mean')
             loss0 = bce_loss(pred_inouts, gt_io.to(device))
-            loss1 = (pbce_loss(pred_heatmaps, gt_hm.to(device)) * LOSS_SCALAR
-                     ).mean([1, 2]) * inout_mask
+            # pbce_raw: [N_total, 64, 64] when reduction='none',
+            #           scalar            when reduction='mean'
+            pbce_raw = pbce_loss(pred_heatmaps, gt_hm.to(device)) * LOSS_SCALAR
+            loss1 = (pbce_raw.mean([1, 2]) * inout_mask  # [N_total,64,64]→[N_total]
+                     if pbce_raw.dim() > 1 else pbce_raw)  # scalar path
+            # CosineL1 → [N_total];  VectorL2Loss → scalar
             loss2 = angle_loss(pred_xys - bbox_ctrs.to(device),
                                gt_xys.to(device) - bbox_ctrs.to(device)) * inout_mask
             loss3 = vec_loss(pred_xys - bbox_ctrs.to(device),
