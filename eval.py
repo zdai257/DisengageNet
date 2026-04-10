@@ -253,7 +253,7 @@ def eval_pretrain_gazefollow(config, model, test_loader, device):
 
 if __name__=="__main__":
     split = 'test'
-    dataset_name = "gazefollow_extended"  #"GazeFollow"
+    dataset_name = "GOOSynthV3"  #"GazeFollow" / "gazefollow_extended" / "GOOSynthV3"
 
     import json
 
@@ -344,3 +344,56 @@ if __name__=="__main__":
 
         if 0:  # if saving
             viz.convert("RGB").save(saved_path)
+
+    elif dataset_name=="GOOSynthV3":
+        id = 3220
+        frames = []
+        
+        data_path = join("..", dataset_name)
+        with open(join(data_path, "goosynth_{}_preprocess.json".format(split)), "rb") as f:
+            frames = json.load(f)
+
+            total_frames, total_ins = 0, 0
+            for i, ff in enumerate(frames):
+                gt = ff['heads']
+                assert len(gt)==1
+                total_ins += gt[0]['inout']
+                total_frames += 1
+
+            print(total_frames, total_ins/total_frames)
+            exit()
+
+            frame  = frames[id]
+            image  = Image.open(
+                os.path.join(data_path, frame["path"])
+            ).convert("RGB")
+            
+            bboxes = [head["bbox_norm"]  for head in frame["heads"]]
+            gazex  = [head["gazex_norm"] for head in frame["heads"]][0][0]
+            gazey  = [head["gazey_norm"] for head in frame["heads"]][0][0]
+            inout  = [head["inout"]      for head in frame["heads"]]
+
+            w, h = image.width, image.height
+            print(w, h)
+            print(gazex, gazey)
+            # convert a heatmap from label
+            gazex_pixel = gazex * w
+            gazey_pixel = gazey * h
+
+            gt_heatmap = torch.zeros((64, 64))
+            x_grid = int(gazex * 63)
+            y_grid = int(gazey * 63)
+            gt_heatmap[y_grid, x_grid] = 1
+
+            bbox = [frame['heads'][0]['bbox_norm'][0], frame['heads'][0]['bbox_norm'][1], frame['heads'][0]['bbox_norm'][2], frame['heads'][0]['bbox_norm'][3]]
+            print(bbox)
+
+            viz = visualize_heatmap2(image, gt_heatmap, bbox=bbox, xy=(gazex_pixel, gazey_pixel), dilation_kernel=6, blur_radius=1.3)
+            #viz = visualize_heatmap3(image, gt_heatmap, bbox=bbox, xy=(gazex_pixel, gazey_pixel), dilation_kernel=5, blur_radius=1.3, transparent_bg=True)
+            plt.imshow(viz)
+            plt.show()
+
+            saved_path = join("processed", "demo_" + "goosynth_{}".format(id))
+            if 0:  # if saving
+                viz.convert("RGB").save(saved_path)
+

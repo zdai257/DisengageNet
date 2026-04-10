@@ -56,6 +56,40 @@ def collate(batch):
     return torch.stack(images), list(bboxes), list(gazex), list(gazey), list(inout)
 
 
+class FocalLoss(torch.nn.Module):
+    def __init__(self, alpha=0.02/0.98, gamma=2.0, reduction='mean', apply_sigmoid=False):
+        """
+            alpha (float): Weighting factor for the minority class (e.g., 0.4/0.6 for VAT; 0.02/0.98 for GOO).
+            gamma (float): Focusing parameter to down-weight easy examples (e.g., 2.0).
+        """
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.apply_sigmoid = apply_sigmoid
+
+    def forward(self, inputs, targets):
+        targets = targets.float()
+        # Apply sigmoid if inputs are logits
+        if self.apply_sigmoid:
+            probs = torch.sigmoid(inputs)
+        else:
+            probs = inputs
+        # Compute binary cross-entropy (without reduction)
+        bce = F.binary_cross_entropy(probs, targets, reduction='none')
+        # Compute pt = exp(-bce) = probability of true class
+        pt = torch.exp(-bce)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce
+
+        # Apply reduction
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:  # 'none'
+            return focal_loss
+
+
 # ---------------------------------------------------------------------------
 # GT heatmap construction
 # ---------------------------------------------------------------------------
@@ -274,14 +308,18 @@ def main():
     )
 
     # ---- Loss functions ----------------------------------------------
-    bce_loss  = torch.nn.BCELoss(reduction="mean")
+    if config['model']['is_focal_loss'] == 1:
+        inout_loss_fn = FocalLoss()
+    else:
+        inout_loss_fn = torch.nn.BCELoss()
+    #bce_loss  = torch.nn.BCELoss(reduction="mean")
     pbce_loss = (torch.nn.MSELoss(reduction=config["model"]["reduction"])
                  if config["model"]["pbce_loss"] == "mse"
                  else torch.nn.BCELoss(reduction=config["model"]["reduction"]))
     angle_loss    = CosineL1()
     vec_loss      = VectorL2Loss()
     soft_argmax   = SoftArgmax2D()
-    loss_fns = (bce_loss, pbce_loss, angle_loss, vec_loss, soft_argmax)
+    loss_fns = (inout_loss_fn, pbce_loss, angle_loss, vec_loss, soft_argmax)
 
     # ---- Checkpoint setup --------------------------------------------
     ckpt_dir = os.path.join(
@@ -329,7 +367,7 @@ def main():
             inout_mask = gt_io.to(device)             # [N_total]
 
             # loss0: scalar  (inout BCE, reduction='mean')
-            loss0 = bce_loss(pred_inouts, gt_io.to(device))
+            loss0 = inout_loss_fn(pred_inouts, gt_io.to(device))
             # pbce_raw: [N_total, 64, 64] when reduction='none',
             #           scalar            when reduction='mean'
             pbce_raw = pbce_loss(pred_heatmaps, gt_hm.to(device)) * LOSS_SCALAR
