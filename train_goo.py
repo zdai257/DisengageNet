@@ -293,7 +293,7 @@ def main():
     ])
 
     # ---- Dataloaders -------------------------------------------------
-    train_dataset = GOOSynth(data_path, img_transform, split="train")
+    train_dataset = GOOSynth(data_path, val_transform, split="train")
     test_dataset  = GOOSynth(data_path, val_transform, split="test")
 
     train_loader = torch.utils.data.DataLoader(
@@ -368,7 +368,8 @@ def main():
             # gt_hm       : [N_total, 64, 64]   gt_io   : [N_total]
             # bbox_ctrs   : [N_total, 2]         gt_xys  : [N_total, 2]
             gt_hm, gt_io, bbox_ctrs, gt_xys = build_gt(bboxes, gazex, gazey, inout)
-            pred_xys   = soft_argmax(pred_heatmaps)  # [N_total, 2]
+            # fixed: make pred_xys normalized in [0, 1], as those from build_gt()
+            pred_xys   = soft_argmax(pred_heatmaps) / 63.0  # [N_total, 2]
             inout_mask = gt_io.to(device)             # [N_total]
 
             # loss0: scalar  (inout BCE, reduction='mean')
