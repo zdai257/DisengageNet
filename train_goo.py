@@ -270,7 +270,7 @@ def main():
     # ---- Scheduler ---------------------------------------------------
     sched  = config["train"]["lr_scheduler"]
     if sched["type"] == "cosine":
-        scheduler = CosineAnnealingLR(optimizer, T_max=sched["step_size"], eta_min=sched["min_lr"])
+        scheduler = CosineAnnealingLR(optimizer, T_max=sched["step_size"], eta_min=float(sched["min_lr"]))
     elif sched["type"] == "warmup":
         ws = sched["step_size"]
         scheduler = LambdaLR(optimizer, lr_lambda=lambda e: min(1.0, e / ws))

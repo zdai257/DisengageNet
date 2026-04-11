@@ -313,7 +313,7 @@ def main():
     if config['train']['lr_scheduler']['type'] == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
                                                                T_max=20)
-                                                               #eta_min=config['train']['lr_scheduler']['min_lr'])
+                                                               #eta_min=ffloat(config['train']['lr_scheduler']['min_lr']))
     elif config['train']['lr_scheduler']['type'] == "warmup":
         def warmup_lambda(epoch):
             if epoch < lr_step_size:
