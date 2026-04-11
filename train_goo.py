@@ -13,6 +13,7 @@ from tqdm import tqdm
 import yaml
 
 from eval import eval_metrics, average_precision_score, vat_auc, vat_l2
+from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gazemoe_model
 from network.utils import SoftArgmax2D, CosineL1, VectorL2Loss
 
@@ -224,7 +225,8 @@ def main():
     print(f"Device: {device}  |  Data: {data_path}")
 
     # ---- Model (random init, backbone frozen) ------------------------
-    model, _ = get_gazemoe_model(config)
+    model, _ = get_gazelle_model(config)
+    #model, _ = get_gazemoe_model(config)
 
     for name, param in model.named_parameters():
         param.requires_grad = "backbone" not in name

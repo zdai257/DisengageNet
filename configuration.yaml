@@ -1,6 +1,6 @@
 # General Configuration
 model:
-  name: "gazemoe_dinov2_vitl14_inout"  # "gazelle_dinov2_vitl14_inout" OR "gazemoe_dinov2_vitl14_inout"
+  name: "gazelle_dinov2_vitb14_inout"  # "gazelle_dinov2_vitl14_inout" OR "gazemoe_dinov2_vitl14_inout"
   pretrained_path: "pretrainMoE_MSF1_best.pt"  #"pretrainShared_epoch_14.pt" or "gazelle_dinov2_vitl14_inout.pt"
   mlp_ratio: 1  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size [1, 2, 4]
   num_experts: 4  # Routed experts [3, 4, 6]
@@ -73,8 +73,8 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/GazeMoE_Goosynth/"           # auto naming
-  pre_dir: "results/pretrainGazeMoE_Goosynth/"
+  log_dir: "results/GazeLLE-vitb_Goosynth/"           # auto naming
+  pre_dir: "results/pretrainGazeLLE-vitb_Goosynth/"
   save_every: 5
 
 hardware:
