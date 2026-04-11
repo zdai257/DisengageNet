@@ -183,7 +183,7 @@ def evaluate(config, model, loader, device, loss_fns):
         loss0    = bce_loss(pred_inouts, gt_io.to(device))
         pbce_raw = pbce_loss(pred_heatmaps, gt_hm.to(device)) * LOSS_SCALAR
         loss1    = (pbce_raw.mean([1, 2]) * inout_mask
-                    if pbce_raw.dim() > 1 else pbce_raw)
+                    if pbce_raw.dim() > 1 else pbce_raw * inout_mask)
         loss2    = angle_loss(pred_xys - bbox_ctrs.to(device),
                               gt_xys.to(device) - bbox_ctrs.to(device)) * inout_mask
         loss3    = vec_loss(pred_xys - bbox_ctrs.to(device),
@@ -270,7 +270,7 @@ def main():
     # ---- Scheduler ---------------------------------------------------
     sched  = config["train"]["lr_scheduler"]
     if sched["type"] == "cosine":
-        scheduler = CosineAnnealingLR(optimizer, T_max=20)
+        scheduler = CosineAnnealingLR(optimizer, T_max=sched["step_size"], eta_min=sched["min_lr"])
     elif sched["type"] == "warmup":
         ws = sched["step_size"]
         scheduler = LambdaLR(optimizer, lr_lambda=lambda e: min(1.0, e / ws))
@@ -286,10 +286,15 @@ def main():
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         T.Resize((res, res)),
     ])
+    val_transform = T.Compose([
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        T.Resize((res, res)),
+    ])
 
     # ---- Dataloaders -------------------------------------------------
     train_dataset = GOOSynth(data_path, img_transform, split="train")
-    test_dataset  = GOOSynth(data_path, img_transform, split="test")
+    test_dataset  = GOOSynth(data_path, val_transform, split="test")
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
