@@ -182,9 +182,10 @@ def evaluate(config, model, loader, device, loss_fns):
         inout_mask = gt_io.to(device)             # [N_total]
 
         loss0    = bce_loss(pred_inouts, gt_io.to(device))
-        pbce_raw = pbce_loss(pred_heatmaps, gt_hm.to(device)) * LOSS_SCALAR
-        loss1    = (pbce_raw.mean([1, 2]) * inout_mask
-                    if pbce_raw.dim() > 1 else pbce_raw * inout_mask)
+        
+        # fix PBCE loss with Gazelle-VAT's logic
+        loss1 = pbce_loss(pred_heatmaps[inout_mask.bool()], gt_hm.to(device)[inout_mask.bool()]) * LOSS_SCALAR
+
         loss2    = angle_loss(pred_xys - bbox_ctrs.to(device),
                               gt_xys.to(device) - bbox_ctrs.to(device)) * inout_mask
         loss3    = vec_loss(pred_xys - bbox_ctrs.to(device),
@@ -192,8 +193,8 @@ def evaluate(config, model, loader, device, loss_fns):
 
         total_loss += (
             config["model"]["bce_weight"]   * loss0
-            + config["model"]["mse_weight"]   * loss1.mean()
-            + config["model"]["angle_weight"] * loss2.mean()
+            + config["model"]["mse_weight"]   * loss1
+            + config["model"]["angle_weight"] * loss2.mean() 
             + config["model"]["vec_weight"]   * loss3.mean()
         ).item()
 
