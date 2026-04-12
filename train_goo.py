@@ -378,9 +378,13 @@ def main():
             loss0 = inout_loss_fn(pred_inouts, gt_io.to(device))
             # pbce_raw: [N_total, 64, 64] when reduction='none',
             #           scalar            when reduction='mean'
-            pbce_raw = pbce_loss(pred_heatmaps, gt_hm.to(device)) * LOSS_SCALAR
-            loss1 = (pbce_raw.mean([1, 2]) * inout_mask  # [N_total,64,64]→[N_total]
-                     if pbce_raw.dim() > 1 else pbce_raw)  # scalar path
+            #pbce_raw = pbce_loss(pred_heatmaps, gt_hm.to(device)) * LOSS_SCALAR
+            #loss1 = (pbce_raw.mean([1, 2]) * inout_mask  # [N_total,64,64]→[N_total]
+            #         if pbce_raw.dim() > 1 else pbce_raw)  # scalar path
+
+            # fix PBCE loss with Gazelle-VAT's logic
+            loss1 = pbce_loss(pred_heatmaps[inout_mask.bool()], gt_hm.to(device)[inout_mask.bool()]) * LOSS_SCALAR
+
             # CosineL1 → [N_total];  VectorL2Loss → scalar
             loss2 = angle_loss(pred_xys - bbox_ctrs.to(device),
                                gt_xys.to(device) - bbox_ctrs.to(device)) * inout_mask
@@ -389,9 +393,9 @@ def main():
 
             total_loss = (
                 config["model"]["bce_weight"]   * loss0
-                + config["model"]["mse_weight"]   * loss1.mean()
-                + config["model"]["angle_weight"] * loss2.mean()
-                + config["model"]["vec_weight"]   * loss3.mean()
+                + config["model"]["mse_weight"]   * loss1
+                + config["model"]["angle_weight"] * loss2.mean()  # .mean() needed?
+                + config["model"]["vec_weight"]   * loss3.mean()  # .mean() needed?
             )
 
             optimizer.zero_grad()
