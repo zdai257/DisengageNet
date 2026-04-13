@@ -257,13 +257,13 @@ def main():
 
     print("Loading model from {}".format(config['model']['pretrained_path']))
     ### initializing from ckpt without inout head ###
-    model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True, map_location=device))
+    #model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True, map_location=device))
 
     for name, param in model.named_parameters():
         param.requires_grad = "backbone" not in name
 
     for name, param in model.named_parameters():
-        break
+        #break
         if not param.requires_grad:
             continue
         if param.dim() > 1:
@@ -334,7 +334,7 @@ def main():
     # Set  data.goo_real_path  to the preprocessed GOORealV3 directory
     _real_path = config["data"].get("goo_real_path", "")
     if _real_path:
-        train_dataset = GOOReal(_real_path, img_transform)  # TODO
+        test_dataset = GOOReal(_real_path, val_transform)
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -368,7 +368,7 @@ def main():
 
     # ---- Checkpoint setup --------------------------------------------
     ckpt_dir = os.path.join(
-        config["logging"]["log_dir"],
+        config["logging"]["pre_dir"],
         "_".join([
             opt_name,
             "bs" + str(config["train"]["batch_size"]),
