@@ -77,92 +77,112 @@ def process_split(dataset_split, split_name, out_dir, save_images, image_format,
 
     frames = []
     num_skipped = 0
+    num_corrupt = 0
 
-    for idx, sample in enumerate(tqdm(dataset_split, desc=f"Processing {split_name}")):
-        width  = int(sample["width"])
-        height = int(sample["height"])
-
-        # ---- save image -------------------------------------------------- #
-        img_filename = f"{idx:08d}.{image_format}"
-        # Relative path stored in JSON – matches how loaders open images.
-        img_rel_path = os.path.join("images", split_name, img_filename)
-        img_abs_path = os.path.join(out_dir, img_rel_path)
-
-        if save_images:
-            image = sample["image"]
-            if not isinstance(image, Image.Image):
-                image = Image.fromarray(np.asarray(image))
-            image.convert("RGB").save(
-                img_abs_path,
-                quality=95 if image_format == "jpg" else None,
-            )
-
-        # ---- head bounding box ------------------------------------------- #
-        # GOO annotation convention: head bbox is always the LAST entry.
-        # For GOOReal, bboxes is always a string; for GOOSynth it may be either.
-        raw_bboxes = parse_bboxes(sample["bboxes"])
-
-        if len(raw_bboxes) == 0:
-            num_skipped += 1
+    # Index-based iteration so we can catch per-sample decode errors from the
+    # HuggingFace / PIL layer (e.g. "broken data stream") without aborting the
+    # whole run.  Iterator-based loops surface these errors inside next() where
+    # a try/except around the loop body cannot catch them.
+    total = len(dataset_split)
+    for idx in tqdm(range(total), desc=f"Processing {split_name}"):
+        try:
+            sample = dataset_split[idx]
+        except Exception as e:
+            tqdm.write(f"  [WARN] idx {idx}: skipping corrupt sample ({type(e).__name__}: {e})")
+            num_corrupt += 1
             continue
 
-        head_raw = raw_bboxes[-1]  # [xmin, ymin, xmax, ymax] in absolute pixels
-        xmin, ymin, xmax, ymax = (float(v) for v in head_raw)
+        try:
+            width  = int(sample["width"])
+            height = int(sample["height"])
 
-        # Clamp within image bounds
-        xmin = max(xmin, 0.0)
-        ymin = max(ymin, 0.0)
-        xmax = min(xmax, float(width))
-        ymax = min(ymax, float(height))
+            # ---- save image ---------------------------------------------- #
+            img_filename = f"{idx:08d}.{image_format}"
+            # Relative path stored in JSON – matches how loaders open images.
+            img_rel_path = os.path.join("images", split_name, img_filename)
+            img_abs_path = os.path.join(out_dir, img_rel_path)
 
-        # ---- gaze target ------------------------------------------------- #
-        gaze_cx = float(sample["gaze_cx"])
-        gaze_cy = float(sample["gaze_cy"])
+            if save_images:
+                image = sample["image"]
+                if not isinstance(image, Image.Image):
+                    image = Image.fromarray(np.asarray(image))
+                image.convert("RGB").save(
+                    img_abs_path,
+                    quality=95 if image_format == "jpg" else None,
+                )
 
-        # Treat negative sentinel values as out-of-frame (matches VAT/GazeFollow logic).
-        inout = int(gaze_cx >= 0 and gaze_cy >= 0)
+            # ---- head bounding box --------------------------------------- #
+            # GOO annotation convention: head bbox is always the LAST entry.
+            # For GOOReal, bboxes is always a string; for GOOSynth it may be either.
+            raw_bboxes = parse_bboxes(sample["bboxes"])
 
-        # Clamp boundary-negative coords to 0
-        if gaze_cx < 0:
-            gaze_cx = 0.0
-        if gaze_cy < 0:
-            gaze_cy = 0.0
+            if len(raw_bboxes) == 0:
+                num_skipped += 1
+                continue
 
-        # ---- build head annotation entry --------------------------------- #
-        head_entry = {
-            "bbox":       [xmin, ymin, xmax, ymax],
-            "bbox_norm":  [
-                xmin / float(width),
-                ymin / float(height),
-                xmax / float(width),
-                ymax / float(height),
-            ],
-            "gazex":      [gaze_cx],
-            "gazex_norm": [gaze_cx / float(width)],
-            "gazey":      [gaze_cy],
-            "gazey_norm": [gaze_cy / float(height)],
-            "inout":      inout,
-        }
+            head_raw = raw_bboxes[-1]  # [xmin, ymin, xmax, ymax] in absolute pixels
+            xmin, ymin, xmax, ymax = (float(v) for v in head_raw)
 
-        # GOOReal provides an explicit head/eye centre (hx, hy) that is more
-        # precise than the bbox centre.  Store as optional extras; core loaders
-        # (train_goo.py, train_vat.py, …) ignore unknown keys automatically.
-        if is_real:
-            hx = float(sample["hx"])
-            hy = float(sample["hy"])
-            head_entry["hx"]      = hx
-            head_entry["hy"]      = hy
-            head_entry["hx_norm"] = hx / float(width)
-            head_entry["hy_norm"] = hy / float(height)
+            # Clamp within image bounds
+            xmin = max(xmin, 0.0)
+            ymin = max(ymin, 0.0)
+            xmax = min(xmax, float(width))
+            ymax = min(ymax, float(height))
 
-        frames.append({
-            "path":   img_rel_path,
-            "width":  width,
-            "height": height,
-            "heads":  [head_entry],
-        })
+            # ---- gaze target --------------------------------------------- #
+            gaze_cx = float(sample["gaze_cx"])
+            gaze_cy = float(sample["gaze_cy"])
 
-    print(f"  {split_name}: {len(frames)} frames processed, {num_skipped} skipped (empty bboxes).")
+            # Treat negative sentinel values as out-of-frame (matches VAT/GazeFollow logic).
+            inout = int(gaze_cx >= 0 and gaze_cy >= 0)
+
+            # Clamp boundary-negative coords to 0
+            if gaze_cx < 0:
+                gaze_cx = 0.0
+            if gaze_cy < 0:
+                gaze_cy = 0.0
+
+            # ---- build head annotation entry ----------------------------- #
+            head_entry = {
+                "bbox":       [xmin, ymin, xmax, ymax],
+                "bbox_norm":  [
+                    xmin / float(width),
+                    ymin / float(height),
+                    xmax / float(width),
+                    ymax / float(height),
+                ],
+                "gazex":      [gaze_cx],
+                "gazex_norm": [gaze_cx / float(width)],
+                "gazey":      [gaze_cy],
+                "gazey_norm": [gaze_cy / float(height)],
+                "inout":      inout,
+            }
+
+            # GOOReal provides an explicit head/eye centre (hx, hy) that is more
+            # precise than the bbox centre.  Store as optional extras; core loaders
+            # (train_goo.py, train_vat.py, …) ignore unknown keys automatically.
+            if is_real:
+                hx = float(sample["hx"])
+                hy = float(sample["hy"])
+                head_entry["hx"]      = hx
+                head_entry["hy"]      = hy
+                head_entry["hx_norm"] = hx / float(width)
+                head_entry["hy_norm"] = hy / float(height)
+
+            frames.append({
+                "path":   img_rel_path,
+                "width":  width,
+                "height": height,
+                "heads":  [head_entry],
+            })
+
+        except Exception as e:
+            tqdm.write(f"  [WARN] idx {idx}: skipping due to processing error ({type(e).__name__}: {e})")
+            num_skipped += 1
+
+    print(f"  {split_name}: {len(frames)} frames processed, "
+          f"{num_skipped} skipped (empty/bad bboxes), "
+          f"{num_corrupt} skipped (corrupt image decode).")
     return frames
 
 
