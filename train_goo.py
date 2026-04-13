@@ -52,6 +52,32 @@ class GOOSynth(torch.utils.data.Dataset):
         return image, bboxes, gazex, gazey, inout
 
 
+class GOOReal(torch.utils.data.Dataset):
+    """
+    outputs (image, bboxes, gazex, gazey, inout) tuples. GOOReal has only 'test' split
+    """
+    def __init__(self, data_path, img_transform):
+        json_path = os.path.join(data_path, "gooreal_test_preprocess.json")
+        self.frames    = json.load(open(json_path, "rb"))
+        self.data_path = data_path
+        self.transform = img_transform
+
+    def __len__(self):
+        return len(self.frames)
+
+    def __getitem__(self, idx):
+        frame  = self.frames[idx]
+        image  = Image.open(
+            os.path.join(self.data_path, frame["path"])
+        ).convert("RGB")
+        image  = self.transform(image)
+        bboxes = [head["bbox_norm"]  for head in frame["heads"]]
+        gazex  = [head["gazex_norm"] for head in frame["heads"]]
+        gazey  = [head["gazey_norm"] for head in frame["heads"]]
+        inout  = [head["inout"]      for head in frame["heads"]]
+        return image, bboxes, gazex, gazey, inout
+
+
 def collate(batch):
     images, bboxes, gazex, gazey, inout = zip(*batch)
     return torch.stack(images), list(bboxes), list(gazex), list(gazey), list(inout)
@@ -226,13 +252,18 @@ def main():
     print(f"Device: {device}  |  Data: {data_path}")
 
     # ---- Model (random init, backbone frozen) ------------------------
-    model, _ = get_gazelle_model(config)
-    #model, _ = get_gazemoe_model(config)
+    #model, _ = get_gazelle_model(config)
+    model, _ = get_gazemoe_model(config)
+
+    print("Loading model from {}".format(config['model']['pretrained_path']))
+    ### initializing from ckpt without inout head ###
+    model.load_gazelle_state_dict(torch.load(config['model']['pretrained_path'], weights_only=True, map_location=device))
 
     for name, param in model.named_parameters():
         param.requires_grad = "backbone" not in name
 
     for name, param in model.named_parameters():
+        break
         if not param.requires_grad:
             continue
         if param.dim() > 1:
@@ -296,8 +327,14 @@ def main():
     ])
 
     # ---- Dataloaders -------------------------------------------------
-    train_dataset = GOOSynth(data_path, val_transform, split="train")
+    train_dataset = GOOSynth(data_path, img_transform, split="train")
     test_dataset  = GOOSynth(data_path, val_transform, split="test")
+
+    # Optional GOOReal test split ----------------------------------------
+    # Set  data.goo_real_path  to the preprocessed GOORealV3 directory
+    _real_path = config["data"].get("goo_real_path", "")
+    if _real_path:
+        train_dataset = GOOReal(_real_path, img_transform)  # TODO
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,

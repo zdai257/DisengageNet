@@ -1,6 +1,6 @@
 # General Configuration
 model:
-  name: "gazelle_dinov2_vitb14_inout"  # "gazelle_dinov2_vitl14_inout" OR "gazemoe_dinov2_vitl14_inout"
+  name: "gazemoe_dinov2_vitb14_inout"  # "gazelle_dinov2_vitl14_inout" OR "gazemoe_dinov2_vitl14_inout"
   pretrained_path: "pretrainMoE_MSF1_best.pt"  #"pretrainShared_epoch_14.pt" or "gazelle_dinov2_vitl14_inout.pt"
   mlp_ratio: 1  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size [1, 2, 4]
   num_experts: 4  # Routed experts [3, 4, 6]
@@ -32,6 +32,7 @@ data:
   pre_train_path: "./gazefollow_extended"
   pre_test_path: "./gazefollow_extended"
   goo_path: "../GOOSynthV3"
+  goo_real_path: "./GOORealV3"   # dir containing gooreal_test_preprocess.json; set "" to disable
   # [["crop"], ["crop", "photometric"], ["crop", "rotation"], ["crop", "photometric", "rotation"]]
   augmentations: ["crop", "photometric"]
 
@@ -39,10 +40,10 @@ train:
   # VAT finetuning hyperparams
   batch_size: 48                    # Batch size for training
   epochs: 15                    # Number of training epochs
-  lr: 0.001                         # 0.00001 for VAt; 0.0001 for ChildPlay
-  inout_lr: 0.001
-  fuse_lr: 0.001
-  block_lr: 0.001
+  lr: 0.0001                         # 0.00001 for VAt; 0.0001 for ChildPlay
+  inout_lr: 0.0001
+  fuse_lr: 0.0001
+  block_lr: 0.0001
   layer_decay: 0                    # 0 or 1
   optimizer: "Adam"                # Optimizer type (adam, adamw, sgd, etc.)
   weight_decay: 0.001                # Weight decay for optimizer
@@ -73,8 +74,8 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/GazeLLE-vitb_Goosynth/"           # auto naming
-  pre_dir: "results/pretrainGazeLLE-vitb_Goosynth/"
+  log_dir: "results/GazeMoE_goosynthFT/"           # auto naming
+  pre_dir: "results/pretrainGazeMoE_goosynthFT/"
   save_every: 5
 
 hardware:
