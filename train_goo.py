@@ -5,7 +5,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as T
-import torchvision.transforms.functional as TF
 from PIL import Image
 from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR, LambdaLR
@@ -15,7 +14,8 @@ import yaml
 from eval import eval_metrics, average_precision_score, vat_auc, vat_l2
 from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gazemoe_model
-from network.utils import SoftArgmax2D, CosineL1, VectorL2Loss
+import network.utils as utils
+from network.utils import SoftArgmax2D, CosineL1, VectorL2Loss, get_heatmap
 
 LOSS_SCALAR = 1
 
@@ -28,6 +28,12 @@ class GOOSynth(torch.utils.data.Dataset):
     """
     Reads goosynth_{split}_preprocess.json produced by preprocess_goosynth.py.
     Returns the same (image, bboxes, gazex, gazey, inout) tuple used by train_vat.py.
+
+    On the train split applies the same spatial augmentations as GazeDataset in
+    train_gazefollow.py (random crop, horizontal flip, bbox jitter) so that both
+    the image and annotations stay consistent.  The JSON stores absolute-pixel
+    coords (bbox / gazex / gazey) alongside the normalised variants; the augmented
+    coords are re-normalised after each transformation.
     """
 
     def __init__(self, data_path, img_transform, split="train"):
@@ -35,21 +41,42 @@ class GOOSynth(torch.utils.data.Dataset):
         self.frames    = json.load(open(json_path, "rb"))
         self.data_path = data_path
         self.transform = img_transform
+        self.is_train  = (split == "train")
 
     def __len__(self):
         return len(self.frames)
 
     def __getitem__(self, idx):
-        frame  = self.frames[idx]
-        image  = Image.open(
+        frame = self.frames[idx]
+        image = Image.open(
             os.path.join(self.data_path, frame["path"])
         ).convert("RGB")
-        image  = self.transform(image)
-        bboxes = [head["bbox_norm"]  for head in frame["heads"]]
-        gazex  = [head["gazex_norm"] for head in frame["heads"]]
-        gazey  = [head["gazey_norm"] for head in frame["heads"]]
-        inout  = [head["inout"]      for head in frame["heads"]]
-        return image, bboxes, gazex, gazey, inout
+
+        # GOOSynth has exactly one head per frame.
+        # Use absolute-pixel coordinates for spatial augmentation.
+        head  = frame["heads"][0]
+        bbox  = list(head["bbox"])   # [xmin, ymin, xmax, ymax] in absolute pixels
+        gazex = list(head["gazex"])  # [gaze_cx] in absolute pixels
+        gazey = list(head["gazey"])  # [gaze_cy] in absolute pixels
+        inout = head["inout"]        # 1 for all GOOSynth samples
+
+        if self.is_train:
+            if np.random.sample() <= 0.5:
+                image, bbox, gazex, gazey = utils.random_crop(image, bbox, gazex, gazey, inout)
+            if np.random.sample() <= 0.5:
+                image, bbox, gazex, gazey = utils.horiz_flip(image, bbox, gazex, gazey, inout)
+            if np.random.sample() <= 0.5:
+                bbox = utils.random_bbox_jitter(image, bbox)
+
+        # Re-normalise after augmentation (image size may have changed after crop).
+        width, height = image.size
+        bbox_norm  = [bbox[0] / width,  bbox[1] / height,
+                      bbox[2] / width,  bbox[3] / height]
+        gazex_norm = [x / float(width)  for x in gazex]
+        gazey_norm = [y / float(height) for y in gazey]
+
+        image = self.transform(image)
+        return image, [bbox_norm], [gazex_norm], [gazey_norm], [inout]
 
 
 class GOOReal(torch.utils.data.Dataset):
@@ -70,12 +97,31 @@ class GOOReal(torch.utils.data.Dataset):
         image  = Image.open(
             os.path.join(self.data_path, frame["path"])
         ).convert("RGB")
-        image  = self.transform(image)
-        bboxes = [head["bbox_norm"]  for head in frame["heads"]]
-        gazex  = [head["gazex_norm"] for head in frame["heads"]]
-        gazey  = [head["gazey_norm"] for head in frame["heads"]]
-        inout  = [head["inout"]      for head in frame["heads"]]
-        return image, bboxes, gazex, gazey, inout
+        
+        # GOOReal has exactly one head per frame.
+        head  = frame["heads"][0]
+        bbox  = list(head["bbox"])   # [xmin, ymin, xmax, ymax] in absolute pixels
+        gazex = list(head["gazex"])  # [gaze_cx] in absolute pixels
+        gazey = list(head["gazey"])  # [gaze_cy] in absolute pixels
+        inout = head["inout"]        # 1 for all GOOSynth samples
+
+        if True:
+            if np.random.sample() <= 0.5:
+                image, bbox, gazex, gazey = utils.random_crop(image, bbox, gazex, gazey, inout)
+            if np.random.sample() <= 0.5:
+                image, bbox, gazex, gazey = utils.horiz_flip(image, bbox, gazex, gazey, inout)
+            if np.random.sample() <= 0.5:
+                bbox = utils.random_bbox_jitter(image, bbox)
+
+        # Re-normalise after augmentation (image size may have changed after crop).
+        width, height = image.size
+        bbox_norm  = [bbox[0] / width,  bbox[1] / height,
+                      bbox[2] / width,  bbox[3] / height]
+        gazex_norm = [x / float(width)  for x in gazex]
+        gazey_norm = [y / float(height) for y in gazey]
+
+        image = self.transform(image)
+        return image, [bbox_norm], [gazex_norm], [gazey_norm], [inout]
 
 
 def collate(batch):
@@ -120,7 +166,7 @@ class FocalLoss(torch.nn.Module):
 # ---------------------------------------------------------------------------
 # GT heatmap construction
 # ---------------------------------------------------------------------------
-
+### Deserted, raidus 0.8 too small for pretraining -> 3 ?
 def apply_dilation_blur(heatmap, dilation_kernel=5, blur_radius=0.8,
                         peak_val=1.0, min_val=0.0):
     heatmap = heatmap.unsqueeze(0)
@@ -135,7 +181,11 @@ def apply_dilation_blur(heatmap, dilation_kernel=5, blur_radius=0.8,
 
 
 def build_gt(bboxes, gazex, gazey, inout):
-    """Convert per-batch annotation lists → stacked tensors for loss computation."""
+    """Convert per-batch annotation lists → stacked tensors for loss computation.
+
+    Uses the same get_heatmap(sigma=3) as train_gazefollow.py, producing a
+    smooth 19×19 px Gaussian target on the 64×64 grid.
+    """
     gt_heatmaps, gt_inouts, bbox_ctrs, gt_xys = [], [], [], []
     for bbxs, gtxs, gtys, ios in zip(bboxes, gazex, gazey, inout):
         h_maps, h_ios = [], []
@@ -143,9 +193,8 @@ def build_gt(bboxes, gazex, gazey, inout):
             bbox_ctrs.append(torch.tensor(
                 [(bbx[0] + bbx[2]) / 2, (bbx[1] + bbx[3]) / 2], dtype=torch.float32))
             gt_xys.append(torch.tensor([gtx[0], gty[0]], dtype=torch.float32))
-            hm = torch.zeros(64, 64)
-            hm[int(gty[0] * 63), int(gtx[0] * 63)] = 1
-            hm = apply_dilation_blur(hm)
+            # sigma=3 matches train_gazefollow.py; covers ~19×19 px on 64×64 grid !
+            hm = get_heatmap(gtx[0], gty[0], 64, 64)
             h_maps.append(hm)
             h_ios.append(torch.tensor([io], dtype=torch.float32))
         gt_heatmaps.append(torch.stack(h_maps))
@@ -313,9 +362,10 @@ def main():
 
     # ---- Transforms --------------------------------------------------
     res = config["data"]["input_resolution"]
+    # applied Augmentation in Dataloaders
     img_transform = T.Compose([
-        T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
-        T.RandomApply([T.RandomGrayscale(p=0.2)], p=0.3),
+        #T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+        #T.RandomApply([T.RandomGrayscale(p=0.2)], p=0.3),
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         T.Resize((res, res)),
