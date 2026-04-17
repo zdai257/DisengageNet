@@ -46,7 +46,7 @@ train:
   block_lr: 0.001
   layer_decay: 0                    # 0 or 1
   optimizer: "Adam"                # Optimizer type (adam, adamw, sgd, etc.)
-  weight_decay: 0.01                # Weight decay for optimizer
+  weight_decay: 0.0                # Weight decay for optimizer
   lr_scheduler:                     # Learning rate scheduler settings
     type: "cosine"                  # cosine / linear / warmup (for warmup training)
     step_size: 15                   # Step size for step scheduler / warmup: warmup_epochs
