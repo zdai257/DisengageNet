@@ -1,7 +1,7 @@
 # General Configuration
 model:
-  name: "gazemoe_dinov2_vitl14_inout"  # "gazelle_dinov2_vitl14_inout" OR "gazemoe_dinov2_vitl14_inout"
-  pretrained_path: "pretrainMoE_MSF1_best.pt"  #"pretrainShared_epoch_14.pt" or "gazelle_dinov2_vitl14_inout.pt"
+  name: "gazelle3d_dinov2_vitl14_inout"  # "gazelle_dinov2_vitl14_inout" OR "gazemoe_dinov2_vitl14_inout"
+  pretrained_path: ""  #"pretrainShared_epoch_14.pt" or "gazelle_dinov2_vitl14_inout.pt" or "pretrainMoE_MSF1_best.pt"
   mlp_ratio: 1  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size [1, 2, 4]
   num_experts: 4  # Routed experts [3, 4, 6]
   num_shared_experts: 1  # Shared experts [1, 2]
@@ -13,6 +13,7 @@ model:
   reduction: "mean"  #"mean" or "none"
   bce_weight: 1.0  # 0.1 for ChildPlay
   mse_weight: 1.0
+  depth_weight: 0.5
   angle_weight: 0.0  # 0.05 / 0.1
   vec_weight: 0.0
   kld_weight: 0.0  # 0.01, 0.02, 0.05, 0.1 [0.0, 0.02, 0.05, 0.1]
