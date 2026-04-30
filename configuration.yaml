@@ -11,9 +11,9 @@ model:
   is_focal_loss: 1  # if using FocalLoss for class balancing
   pbce_loss: "bce"  #"mse" or "bce" or "hybrid"
   reduction: "mean"  #"mean" or "none"
-  bce_weight: 1.0  # 0.1 for ChildPlay
+  bce_weight: 0.0  # 0.1 for ChildPlay; disable for GOO(?) and GazeFollow
   mse_weight: 1.0
-  depth_weight: 0.5
+  depth_weight: 0.5  # Between 0.2 to 1.0. The default 0.5 is a defensible mid-point
   angle_weight: 0.0  # 0.05 / 0.1
   vec_weight: 0.0
   kld_weight: 0.0  # 0.01, 0.02, 0.05, 0.1 [0.0, 0.02, 0.05, 0.1]
@@ -25,6 +25,8 @@ model:
     depth: 3                        # Number of transformer layers in the decoder (default 3) [3, 4]
     num_heads: 8                    # Number of attention heads
     dropout: 0.1                    # Dropout rate
+  use_refine: True
+  num_refine_layers: 2
 
 data:
   input_resolution: 448
@@ -75,8 +77,8 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/GazeMoE_goosynthV3/"           # auto naming
-  pre_dir: "results/pretrainGazeMoE_goosynthV3/"
+  log_dir: "results/GT3D_goosynthV3/"           # auto naming
+  pre_dir: "results/pretrainGT3D_goosynthV3/"
   save_every: 5
 
 hardware:
