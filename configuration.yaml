@@ -1,6 +1,6 @@
 # General Configuration
 model:
-  name: "gazelle3d_dinov2_vitl14_inout"  # "gazelle_dinov2_vitl14_inout" OR "gazemoe_dinov2_vitl14_inout"
+  name: "gt3d_dinov2_vitl14_inout"  # gt3d_dinov2_vit{b14,l14}{,_inout}
   pretrained_path: ""  #"pretrainShared_epoch_14.pt" or "gazelle_dinov2_vitl14_inout.pt" or "pretrainMoE_MSF1_best.pt"
   mlp_ratio: 1  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size [1, 2, 4]
   num_experts: 4  # Routed experts [3, 4, 6]
@@ -25,8 +25,12 @@ model:
     depth: 3                        # Number of transformer layers in the decoder (default 3) [3, 4]
     num_heads: 8                    # Number of attention heads
     dropout: 0.1                    # Dropout rate
+  depth_loss: "si_log"  # log_huber vs. si_log
+  lambda_si: 0.5     # 0.0 ≡ log-MSE; 1.0 ≡ pure variance-of-d; 0.5 ≡ Eigen recommended
   use_refine: True
+  refine_cond: "scalar"   # "scalar" (1-ch log-ratio) | "pair" (2-ch log z_g/z_h) | "dense" (low-rank dense feat)
   num_refine_layers: 2
+  dense_depth_dim: 32     # only used when refine_cond == "dense"
 
 data:
   input_resolution: 448
@@ -43,8 +47,10 @@ train:
   # VAT finetuning hyperparams
   batch_size: 60                    # Batch size for training
   epochs: 15                    # Number of training epochs
-  lr: 0.001                         # 0.00001 for VAt; 0.0001 for ChildPlay
+  # 0.00001 for VAt; 0.0001 for ChildPlay 
+  lr: 0.001                         # heatmap_head, refined_heatmap_head, pos_embed
   inout_lr: 0.001
+  depth_lr: 0.001
   fuse_lr: 0.001
   block_lr: 0.001
   layer_decay: 0                    # 0 or 1

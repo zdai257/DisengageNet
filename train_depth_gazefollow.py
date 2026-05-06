@@ -1,7 +1,7 @@
 """
 train_depth_gazefollow.py — depth-aware gaze pretraining on GazeFollow.
 
-Mirrors ``train_depth_goo.py`` (same anchored GazeLLE3D model, same
+Mirrors ``train_depth_goo.py`` (same anchored ``GT3D`` model, same
 scale-invariant log-ratio losses, same anchored evaluation metrics) but
 adapted for the GazeFollow corpus stored at ``./gazefollow_extended``:
 
@@ -39,10 +39,11 @@ from PIL import Image
 from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR, StepLR
 from tqdm import tqdm
+import wandb
 import yaml
 
 from eval import gazefollow_auc, gazefollow_l2
-from network.network_builder_3d import get_gazelle3d_model
+from network.network_builder_gt3d import get_gt3d_model
 import network.utils as utils
 from network.utils import get_heatmap
 
@@ -60,6 +61,7 @@ from train_depth_goo import (
     anchored_l2_3d,
     anchored_log_huber_loss,
     anchored_si_log_loss,
+    gaze3d_angle_relative,
     ratio_mae,
     ratio_rmse,
 )
@@ -230,7 +232,7 @@ def evaluate(model, loader, device):
     aucs, avg_l2s, min_l2s = [], [], []
     pred_zg_all, pred_zh_all = [], []
     gt_zg_all,   gt_zh_all   = [], []
-    l2_3d_all                = []
+    l2_3d_all, angle_3d_all  = [], []
 
     for batch in tqdm(loader, desc="Eval", leave=False):
         (images, bboxes, gazex, gazey, inout, heights, widths,
@@ -258,14 +260,24 @@ def evaluate(model, loader, device):
             avg_l2s.append(avg_l2)
             min_l2s.append(min_l2)
 
-            # Anchored L2-3D uses the mean annotator location (matches the
-            # depth GT we sampled at __getitem__).
+            # Anchored L2-3D / Angle-3D both use the mean annotator location
+            # (matches the depth GT sampled at __getitem__).
             gx_mean = float(np.mean(gazex[j]))
             gy_mean = float(np.mean(gazey[j]))
             l2_3d_all.append(anchored_l2_3d(
                 heatmap_j, pred_zg[j], pred_zh[j],
                 gx_mean, gy_mean,
                 gt_zg_t[j].item(), gt_zh_t[j].item()))
+
+            bbox = bboxes[j]
+            head_cx = (float(bbox[0]) + float(bbox[2])) * 0.5
+            head_cy = (float(bbox[1]) + float(bbox[3])) * 0.5
+            angle_3d_all.append(gaze3d_angle_relative(
+                heatmap_j, pred_zg[j], pred_zh[j],
+                gx_mean, gy_mean,
+                gt_zg_t[j].item(), gt_zh_t[j].item(),
+                head_cx, head_cy,
+            ))
 
     pred_zg_t = torch.cat(pred_zg_all)
     pred_zh_t = torch.cat(pred_zh_all)
@@ -278,11 +290,12 @@ def evaluate(model, loader, device):
     R_MAE   = float(ratio_mae (pred_zg_t, pred_zh_t, gt_zg_t, gt_zh_t).item())
     R_RMSE  = float(ratio_rmse(pred_zg_t, pred_zh_t, gt_zg_t, gt_zh_t).item())
     D1      = float(anchored_delta1(pred_zg_t, pred_zh_t, gt_zg_t, gt_zh_t).item())
-    L2_3D   = float(np.mean(l2_3d_all))
+    L2_3D   = float(np.mean(l2_3d_all))    if l2_3d_all    else 0.0
+    A3D     = float(np.mean(angle_3d_all)) if angle_3d_all else 0.0
 
     print(f"  AUC={AUC:.4f}  AvgL2={AvgL2:.4f}  MinL2={MinL2:.4f}  |  "
           f"RatioMAE={R_MAE:.4f}  RatioRMSE={R_RMSE:.4f}  "
-          f"δ1={D1:.4f}  L2-3D={L2_3D:.4f}")
+          f"δ1={D1:.4f}  L2-3D={L2_3D:.4f}  Angle-3D={A3D:.2f}°")
     return {
         "AUC":         AUC,
         "AvgL2":       AvgL2,
@@ -291,6 +304,7 @@ def evaluate(model, loader, device):
         "ratio_rmse":  R_RMSE,
         "delta1":      D1,
         "l2_3d":       L2_3D,
+        "angle_3d":    A3D,
     }
 
 
@@ -310,6 +324,12 @@ def main():
     print(f"Device: {device}")
     print(f"Train: {train_path}   Test: {test_path}   Depth dir: {depth_dir}")
 
+    wandb.init(
+        project=config["model"]["name"],
+        name="train_depth_gazefollow",
+        config=config,
+    )
+
     # ---- Loss weights ------------------------------------------------
     cfg_model = config["model"]
     w_heatmap = float(cfg_model.get("mse_weight",   1.0))
@@ -318,13 +338,13 @@ def main():
     print(f"Loss weights: heatmap={w_heatmap}  inout={w_inout}  depth={w_depth}")
 
     # ---- Model -------------------------------------------------------
-    model, _ = get_gazelle3d_model(config)
+    model, _ = get_gt3d_model(config)
     print(f"Model: {cfg_model['name']}")
 
     pretrained = cfg_model.get("pretrained_path", "")
     if pretrained and os.path.isfile(pretrained):
         print(f"Loading warm-start weights from {pretrained}")
-        model.load_gazelle_state_dict(
+        model.load_gt3d_state_dict(
             torch.load(pretrained, map_location=device, weights_only=True))
 
     for name, param in model.named_parameters():
@@ -344,6 +364,15 @@ def main():
     print(f"Trainable parameters: {n_params:,}")
 
     # ---- Optimizer (uses pre_* hyperparameters per train_gazefollow) -
+    # 4-bucket LR dispatch driven by canonical substrings in module names.
+    # By design every trainable parameter lands in exactly one bucket; the
+    # base ``pre_lr`` arm should never be reached (kept as a safety net only):
+    #   "inout"  → inout_lr   (inout_token, inout_head)
+    #   "depth"  → depth_lr   (depth_token_*, depth_scalar_head, depth_to_feat,
+    #                          dense_depth_decoder, depth_heatmap_head,
+    #                          depth_refined_heatmap_head)
+    #   "block"  → block_lr   (trunk_blocks, refine_blocks)
+    #   "fuse"   → fuse_lr    (fuse_proj, fuse_head_token)
     pre_lr       = float(config["train"].get("pre_lr",       config["train"]["lr"]))
     pre_fuse_lr  = float(config["train"].get("pre_fuse_lr",  pre_lr))
     pre_block_lr = float(config["train"].get("pre_block_lr", pre_lr))
@@ -354,14 +383,14 @@ def main():
     for n, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        if "depth_token" in n or "depth_scalar" in n:
-            lr = pre_depth_lr
-        elif "inout" in n:
+        if "inout" in n:
             lr = pre_inout_lr
-        elif "linear" in n or "ms_fusion" in n:
-            lr = pre_fuse_lr
-        elif "transformer" in n or "refine" in n:
+        elif "depth" in n:
+            lr = pre_depth_lr
+        elif "block" in n:
             lr = pre_block_lr
+        elif "fuse" in n:
+            lr = pre_fuse_lr
         else:
             lr = pre_lr
         param_dicts.append({"params": p, "lr": lr})
@@ -461,6 +490,7 @@ def main():
     pre_epochs = int(config["train"].get("pre_epochs",
                                          config["train"]["epochs"]))
     save_every = int(config["logging"]["save_every"])
+    log_every  = int(config["logging"].get("log_every", save_every))
     best_l2    = float("inf")
     best_path  = None
 
@@ -468,7 +498,8 @@ def main():
         model.train()
         sums = {"total": 0.0, "hm": 0.0, "io": 0.0, "depth": 0.0}
 
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{pre_epochs}"):
+        for cur_iter, batch in enumerate(
+                tqdm(train_loader, desc=f"Epoch {epoch + 1}/{pre_epochs}")):
             (images, bboxes, gazex, gazey, inout, _heights, _widths,
              gt_hm, gt_zg, gt_zh) = batch
 
@@ -511,6 +542,14 @@ def main():
             sums["io"]    += float(l_io.item())
             sums["depth"] += l_depth.item()
 
+            if cur_iter % log_every == 0:
+                wandb.log({
+                    "train/loss":         total.item(),
+                    "train/heatmap_loss": l_hm.item(),
+                    "train/inout_loss":   float(l_io.item()),
+                    "train/depth_loss":   l_depth.item(),
+                })
+
         scheduler.step()
         n = len(train_loader)
         print(f"Epoch [{epoch + 1}/{pre_epochs}]  "
@@ -520,6 +559,17 @@ def main():
               f"Depth={sums['depth']/n:.6f}")
 
         metrics = evaluate(model, test_loader, device)
+        wandb.log({
+            "eval/auc":        metrics["AUC"],
+            "eval/avg_l2":     metrics["AvgL2"],
+            "eval/min_l2":     metrics["MinL2"],
+            "eval/ratio_mae":  metrics["ratio_mae"],
+            "eval/ratio_rmse": metrics["ratio_rmse"],
+            "eval/delta1":     metrics["delta1"],
+            "eval/l2_3d":      metrics["l2_3d"],
+            "eval/angle_3d":   metrics["angle_3d"],
+            "epoch":           epoch,
+        })
 
         if (epoch + 1) % save_every == 0:
             ckpt_path = os.path.join(ckpt_dir, f"model_epoch_{epoch + 1}.pt")
@@ -559,6 +609,8 @@ def main():
             "metrics":          metrics,
         }, final_path)
         print(f"Final best model → {final_path}")
+
+    wandb.finish()
 
 
 if __name__ == "__main__":

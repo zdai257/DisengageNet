@@ -2,7 +2,7 @@
 train_depth_goo.py — depth-aware gaze pretraining on GOOSynthV3.
 
 Extends the train_goo.py pipeline with an additional depth-prediction head
-(GazeLLE3D) trained against DepthAnythingV2 pseudo-labels cached under
+(``GT3D``) trained against DepthAnythingV2 pseudo-labels cached under
 ``<goo_path>/depth/`` by preprocess_Depth.py.
 
 Loss = L_heatmap (BCE)
@@ -33,10 +33,11 @@ from PIL import Image
 from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR, LambdaLR
 from tqdm import tqdm
+import wandb
 import yaml
 
 from eval import eval_metrics, average_precision_score, vat_auc, vat_l2
-from network.network_builder_3d import get_gazelle3d_model
+from network.network_builder_gt3d import get_gt3d_model
 import network.utils as utils
 from network.utils import get_heatmap
 
@@ -392,6 +393,128 @@ def anchored_l2_3d(pred_heatmap, pred_z_gaze, pred_z_head,
 
 
 # --------------------------------------------------------------------------
+# 3-D metrics aligned with the Privacy-Preserving 3-D paper
+# (Tafasca et al., arXiv 2409.17886).  That paper defines:
+#
+#   • 3-D L2     : Euclidean distance in *metric* 3-D between the predicted
+#                  and ground-truth gaze targets.  Requires camera intrinsics
+#                  and a metric depth (e.g. ZoeDepth) for the head and target.
+#   • 3-D Angle  : angular error between predicted and GT gaze rays
+#                  (head → target).
+#
+# In our setting the depth pseudo-labels are per-image min-max-normalised
+# (DepthAnythingV2), so absolute metric distance is not identifiable.  We
+# therefore expose:
+#
+#   • ``gaze3d_angle_relative``: the angular error of the head→target ray
+#     in a synthetic 3-D space whose z axis is the head-anchored log-ratio
+#     log z = log z_target − log z_head.  This is meaningful for
+#     model-vs-model comparison under our depth convention but is *not*
+#     directly comparable to the metric-3-D angle reported in Tafasca 2024
+#     (the relative scaling between (x, y) ∈ [0, 1]² and z ∈ ℝ differs).
+#
+#   • ``gaze3d_l2_metric`` / ``gaze3d_angle_metric``: stubs that raise
+#     ``NotImplementedError`` until a metric depth and intrinsics pipeline
+#     is wired in.  They document the exact inputs and definitions so that
+#     a future evaluator (e.g. ZoeDepth + COLMAP focal estimate) can drop
+#     in without changing the call sites.
+# --------------------------------------------------------------------------
+
+def gaze3d_angle_relative(pred_heatmap, pred_z_gaze, pred_z_head,
+                          gt_gazex_norm, gt_gazey_norm,
+                          gt_z_gaze, gt_z_head,
+                          head_cx_norm, head_cy_norm,
+                          eps=DEPTH_EPS):
+    """Angular error of the head→target ray in (x, y, log-ratio) space.
+
+    Inputs
+    ------
+    pred_heatmap   : tensor [H, W], sigmoid heatmap from the model.
+    pred_z_gaze, pred_z_head : 0-D tensors (per-sample scalars).
+    gt_gazex_norm, gt_gazey_norm : floats in [0, 1] — GT gaze pixel.
+    gt_z_gaze, gt_z_head         : floats in [0, 1] — GT head-anchored depths.
+    head_cx_norm, head_cy_norm   : floats in [0, 1] — head bbox centre.
+
+    Output
+    ------
+    Angular error in **degrees** between predicted and GT head→target rays.
+
+    Convention
+    ----------
+    The 3-D point of the gaze target is (x, y, z) where x, y are the
+    normalised image coords and z is the head-anchored log-ratio
+    ``log z_target − log z_head``.  The head sits at (head_cx, head_cy, 0)
+    by definition, so the ray is (Δx, Δy, log z_target − log z_head).
+    Because the (x, y) and z axes are not in the same physical units, this
+    angle is **scale-coupled** to the depth normalisation; it is suitable
+    for model-vs-model comparison under a fixed convention but not for
+    cross-paper comparison against metric-3-D angle.
+    """
+    h, w = pred_heatmap.shape
+    flat_idx = torch.argmax(pred_heatmap.flatten()).item()
+    v_star = flat_idx // w
+    u_star = flat_idx % w
+    pred_x = u_star / max(w - 1, 1)
+    pred_y = v_star / max(h - 1, 1)
+    pred_lr = float((torch.log(pred_z_gaze.clamp(min=eps))
+                     - torch.log(pred_z_head.clamp(min=eps))).item())
+    gt_lr   = float((torch.log(torch.as_tensor(gt_z_gaze).clamp(min=eps))
+                     - torch.log(torch.as_tensor(gt_z_head).clamp(min=eps))).item())
+
+    pred_vec = np.array([pred_x         - float(head_cx_norm),
+                         pred_y         - float(head_cy_norm),
+                         pred_lr], dtype=np.float64)
+    gt_vec   = np.array([float(gt_gazex_norm) - float(head_cx_norm),
+                         float(gt_gazey_norm) - float(head_cy_norm),
+                         gt_lr],   dtype=np.float64)
+    pn = float(np.linalg.norm(pred_vec)) + 1e-8
+    gn = float(np.linalg.norm(gt_vec))   + 1e-8
+    cos = float(np.dot(pred_vec, gt_vec) / (pn * gn))
+    cos = max(-1.0, min(1.0, cos))
+    return float(np.degrees(np.arccos(cos)))
+
+
+def gaze3d_l2_relative(pred_heatmap, pred_z_gaze, pred_z_head,
+                       gt_gazex_norm, gt_gazey_norm,
+                       gt_z_gaze, gt_z_head,
+                       eps=DEPTH_EPS):
+    """Alias of :func:`anchored_l2_3d` — head-anchored, scale-invariant 3-D L2.
+
+    Reported under the same name as the Privacy-Preserving 3-D paper's
+    metric 3-D L2 for table compatibility, but lives in (x, y, log-ratio)
+    space rather than metric (X, Y, Z).
+    """
+    return anchored_l2_3d(pred_heatmap, pred_z_gaze, pred_z_head,
+                          gt_gazex_norm, gt_gazey_norm,
+                          gt_z_gaze, gt_z_head, eps=eps)
+
+
+def gaze3d_l2_metric(*_args, **_kwargs):
+    """Metric 3-D L2 in physical units.
+
+    Requires (a) per-image camera focal length f_x, f_y, principal point,
+    and (b) a metric depth estimate at both the head pixel and the gaze
+    pixel.  Until those are wired into the dataloader (e.g. via ZoeDepth +
+    a focal-length estimator), this stub intentionally raises so the call
+    site fails loudly rather than silently reporting a misleading value.
+    """
+    raise NotImplementedError(
+        "Metric 3-D L2 needs camera intrinsics and metric depth; not "
+        "available under DepthAnythingV2 per-image min-max normalisation.")
+
+
+def gaze3d_angle_metric(*_args, **_kwargs):
+    """Metric 3-D angular error of the head→target ray.
+
+    Same prerequisites as :func:`gaze3d_l2_metric`.  Provided as a stub so
+    a future drop-in implementation does not require call-site changes.
+    """
+    raise NotImplementedError(
+        "Metric 3-D angle needs camera intrinsics and metric depth; not "
+        "available under DepthAnythingV2 per-image min-max normalisation.")
+
+
+# --------------------------------------------------------------------------
 # Evaluation
 # --------------------------------------------------------------------------
 
@@ -400,14 +523,16 @@ def evaluate(model, loader, device):
     """Compute heatmap metrics + scale-invariant anchored depth metrics.
 
     Heatmap metrics  : AUC, L2 (existing GazeLLE convention), AP for inout.
-    Depth metrics    : Ratio-MAE / Ratio-RMSE in log-ratio space, δ₁ at 1.25,
-                       and Anchored-L2-3D (joint 2-D peak + log-ratio).
+    Depth metrics    : Ratio-MAE / Ratio-RMSE in log-ratio space, δ₁ at 1.25.
+    3-D metrics      : Anchored-L2-3D (joint 2-D peak + log-ratio) and
+                       Angle-3D-rel  (relative 3-D angular error of the
+                       head→target ray under our depth convention).
     """
     model.eval()
     aucs, l2s, inout_preds, inout_gts = [], [], [], []
     pred_zg_all, pred_zh_all = [], []
     gt_zg_all,   gt_zh_all   = [], []
-    l2_3d_all                = []
+    l2_3d_all, angle_3d_all  = [], []
 
     for batch in tqdm(loader, desc="Eval", leave=False):
         images, bboxes, gazex, gazey, inout, gt_zg, gt_zh = batch
@@ -429,11 +554,22 @@ def evaluate(model, loader, device):
                                         gazex[i][j][0], gazey[i][j][0]))
                     l2s.append(vat_l2(preds["heatmap"][i][j],
                                       gazex[i][j][0], gazey[i][j][0]))
+                    hm_cpu = preds["heatmap"][i][j].detach().cpu()
                     l2_3d_all.append(anchored_l2_3d(
-                        preds["heatmap"][i][j].detach().cpu(),
+                        hm_cpu,
                         pred_zg[sample_idx], pred_zh[sample_idx],
                         gazex[i][j][0], gazey[i][j][0],
                         gt_zg[sample_idx].item(), gt_zh[sample_idx].item(),
+                    ))
+                    bbox = bboxes[i][j]
+                    head_cx = (float(bbox[0]) + float(bbox[2])) * 0.5
+                    head_cy = (float(bbox[1]) + float(bbox[3])) * 0.5
+                    angle_3d_all.append(gaze3d_angle_relative(
+                        hm_cpu,
+                        pred_zg[sample_idx], pred_zh[sample_idx],
+                        gazex[i][j][0], gazey[i][j][0],
+                        gt_zg[sample_idx].item(), gt_zh[sample_idx].item(),
+                        head_cx, head_cy,
                     ))
                 inout_preds.append(preds["inout"][i][j].item()
                                    if preds["inout"] is not None else 1.0)
@@ -451,11 +587,12 @@ def evaluate(model, loader, device):
     R_MAE  = float(ratio_mae (pred_zg_t, pred_zh_t, gt_zg_t, gt_zh_t).item())
     R_RMSE = float(ratio_rmse(pred_zg_t, pred_zh_t, gt_zg_t, gt_zh_t).item())
     D1     = float(anchored_delta1(pred_zg_t, pred_zh_t, gt_zg_t, gt_zh_t).item())
-    L2_3D  = float(np.mean(l2_3d_all)) if l2_3d_all else 0.0
+    L2_3D  = float(np.mean(l2_3d_all))    if l2_3d_all    else 0.0
+    A3D    = float(np.mean(angle_3d_all)) if angle_3d_all else 0.0
 
     print(f"  AUC={AUC:.4f}  L2={L2:.4f}  AP={AP:.4f}  |  "
           f"RatioMAE={R_MAE:.4f}  RatioRMSE={R_RMSE:.4f}  "
-          f"δ1={D1:.4f}  L2-3D={L2_3D:.4f}")
+          f"δ1={D1:.4f}  L2-3D={L2_3D:.4f}  Angle-3D={A3D:.2f}°")
     return {
         "AUC":         AUC,
         "L2":          L2,
@@ -464,6 +601,7 @@ def evaluate(model, loader, device):
         "ratio_rmse":  R_RMSE,
         "delta1":      D1,
         "l2_3d":       L2_3D,
+        "angle_3d":    A3D,
     }
 
 
@@ -479,6 +617,12 @@ def main():
     data_path = config["data"]["goo_path"]
     print(f"Device: {device}  |  Data: {data_path}")
 
+    wandb.init(
+        project=config["model"]["name"],
+        name="train_depth_goo",
+        config=config,
+    )
+
     # ---- Loss weights (configurable, sane defaults) ------------------
     cfg_model    = config["model"]
     w_heatmap    = float(cfg_model.get("mse_weight",   1.0))
@@ -488,15 +632,15 @@ def main():
 
     # ---- Model -------------------------------------------------------
     # Drop-in 3-D variant.  Override config['model']['name'] e.g. to
-    # "gazelle3d_dinov2_vitl14_inout" to pick the depth-aware backbone.
-    model, _ = get_gazelle3d_model(config)
+    # "gt3d_dinov2_vitl14_inout" to pick the depth-aware backbone.
+    model, _ = get_gt3d_model(config)
     print(f"Model: {cfg_model['name']}")
 
     # Optionally warm-start the heatmap branch from a 2-D pretraining ckpt.
     pretrained = cfg_model.get("pretrained_path", "")
     if pretrained and os.path.isfile(pretrained):
         print(f"Loading warm-start weights from {pretrained}")
-        model.load_gazelle_state_dict(
+        model.load_gt3d_state_dict(
             torch.load(pretrained, map_location=device, weights_only=True))
 
     for name, param in model.named_parameters():
@@ -517,6 +661,17 @@ def main():
     print(f"Trainable parameters: {n_params:,}")
 
     # ---- Optimizer ---------------------------------------------------
+    # 4-bucket LR dispatch driven by canonical substrings in module names.
+    # By design every trainable parameter lands in exactly one bucket; the
+    # base ``lr`` arm should never be reached (kept as a safety net only):
+    #   "inout"  → inout_lr   (inout_token, inout_head)
+    #   "depth"  → depth_lr   (depth_token_*, depth_scalar_head, depth_to_feat,
+    #                          dense_depth_decoder, depth_heatmap_head,
+    #                          depth_refined_heatmap_head)
+    #   "block"  → block_lr   (trunk_blocks, refine_blocks)
+    #   "fuse"   → fuse_lr    (fuse_proj, fuse_head_token)
+    # Order matters: depth/inout must be checked before block (in case of
+    # any future module whose name contains both substrings).
     param_dicts = []
     for name, param in model.named_parameters():
         if not param.requires_grad:
@@ -525,7 +680,9 @@ def main():
             lr = config["train"]["inout_lr"]
         elif "depth" in name:
             lr = config["train"].get("depth_lr", config["train"]["lr"])
-        elif "linear" in name or "transformer" in name:
+        elif "block" in name:
+            lr = config["train"]["block_lr"]
+        elif "fuse" in name:
             lr = config["train"]["fuse_lr"]
         else:
             lr = config["train"]["lr"]
@@ -623,11 +780,15 @@ def main():
     lambda_si       = float(cfg_model.get("lambda_si", 0.5))
     print(f"Depth loss: {depth_loss_name}  (lambda_si={lambda_si} if si_log)")
 
+    log_every = int(config["logging"].get("log_every",
+                                          config["logging"]["save_every"]))
+
     for epoch in range(num_epochs):
         model.train()
         sums = {"total": 0.0, "hm": 0.0, "io": 0.0, "depth": 0.0}
 
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}"):
+        for cur_iter, batch in enumerate(
+                tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}")):
             images, bboxes, gazex, gazey, inout, gt_hm, gt_zg, gt_zh = batch
 
             preds       = model({"images": images.to(device), "bboxes": bboxes})
@@ -672,6 +833,14 @@ def main():
             sums["io"]    += float(l_io.item())
             sums["depth"] += l_depth.item()
 
+            if cur_iter % log_every == 0:
+                wandb.log({
+                    "train/loss":         total.item(),
+                    "train/heatmap_loss": l_hm.item(),
+                    "train/inout_loss":   float(l_io.item()),
+                    "train/depth_loss":   l_depth.item(),
+                })
+
         scheduler.step()
         n = len(train_loader)
         print(f"Epoch [{epoch + 1}/{num_epochs}]  "
@@ -681,6 +850,17 @@ def main():
               f"Depth={sums['depth']/n:.6f}")
 
         metrics = evaluate(model, test_loader, device)
+        wandb.log({
+            "eval/auc":        metrics["AUC"],
+            "eval/l2":         metrics["L2"],
+            "eval/inout_ap":   metrics["AP"],
+            "eval/ratio_mae":  metrics["ratio_mae"],
+            "eval/ratio_rmse": metrics["ratio_rmse"],
+            "eval/delta1":     metrics["delta1"],
+            "eval/l2_3d":      metrics["l2_3d"],
+            "eval/angle_3d":   metrics["angle_3d"],
+            "epoch":           epoch,
+        })
 
         if (epoch + 1) % save_every == 0:
             ckpt_path = os.path.join(ckpt_dir, f"model_epoch_{epoch + 1}.pt")
@@ -720,6 +900,8 @@ def main():
             "metrics":          metrics,
         }, final_path)
         print(f"Final best model → {final_path}")
+
+    wandb.finish()
 
 
 if __name__ == "__main__":
