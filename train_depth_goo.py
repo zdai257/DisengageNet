@@ -51,6 +51,44 @@ DEPTH_EPS          = 1e-4    # numerical floor for log()
 DEPTH_HUBER_DELTA  = 0.1     # transition between quadratic and linear regions
 
 
+def sample_anchored_depth_gt(depth_pil, gazex_norm, gazey_norm, bbox_norm,
+                             grid=64, pct_lo=2.0, pct_hi=98.0,
+                             gauss_sigma=1.5):
+    """Sample (gt_z_gaze, gt_z_head) on a ``grid``×``grid`` plane.
+
+    Robust to DepthAnythingV2 outliers: min-max normalisation uses the
+    ``pct_lo``–``pct_hi`` percentiles of the downsampled depth (not raw
+    extrema).  Gaze and head targets are Gaussian-kernel weighted
+    expectations (σ = ``gauss_sigma`` in *grid cells*) instead of single-pixel
+    reads — matches the soft nature of the supervision and reduces
+    teacher jitter.
+    """
+    depth_small = depth_pil.resize((grid, grid), Image.BILINEAR)
+    d_arr = np.asarray(depth_small, dtype=np.float32)
+    lo, hi = np.percentile(d_arr, [pct_lo, pct_hi]).astype(np.float64)
+    span = max(float(hi - lo), 1e-8)
+    d_norm = np.clip((d_arr - lo) / span, 0.0, 1.0)
+
+    g = float(grid)
+    gx = float(gazex_norm) * (g - 1.0)
+    gy = float(gazey_norm) * (g - 1.0)
+    u_ax = np.arange(grid, dtype=np.float32)[np.newaxis, :]      # 1 × grid
+    v_ax = np.arange(grid, dtype=np.float32)[:, np.newaxis]    # grid × 1
+    dist2_g = (u_ax - gx) ** 2 + (v_ax - gy) ** 2
+    w_g = np.exp(-dist2_g / (2.0 * gauss_sigma ** 2))
+    wg_sum = float(w_g.sum()) + 1e-8
+    gt_z_gaze = float((d_norm * w_g).sum() / wg_sum)
+
+    hcx = (float(bbox_norm[0]) + float(bbox_norm[2])) * 0.5 * (g - 1.0)
+    hcy = (float(bbox_norm[1]) + float(bbox_norm[3])) * 0.5 * (g - 1.0)
+    dist2_h = (u_ax - hcx) ** 2 + (v_ax - hcy) ** 2
+    w_h = np.exp(-dist2_h / (2.0 * gauss_sigma ** 2))
+    wh_sum = float(w_h.sum()) + 1e-8
+    gt_z_head = float((d_norm * w_h).sum() / wh_sum)
+
+    return gt_z_gaze, gt_z_head
+
+
 # --------------------------------------------------------------------------
 # Joint augmentation helpers (RGB + depth must move together)
 # --------------------------------------------------------------------------
@@ -115,10 +153,10 @@ class GOOSynthDepth(torch.utils.data.Dataset):
     depth maps cached at ``<data_path>/depth/<split>/<image_id>.npy``.
 
     Anchored depth supervision: from each cached depth map we sample only
-    *two* scalars after augmentation — the value at the gaze-target pixel
-    (``gt_z_gaze``) and at the head bbox centre (``gt_z_head``).  Both are
-    in the same per-image min-max-normalised [0, 1] space, so their
-    log-ratio is a scale-invariant supervisable quantity.
+    *two* scalars after augmentation — Gaussian-kernel-weighted averages
+    at the gaze location and head bbox centre (see ``sample_anchored_depth_gt``
+    ).  Values use percentile-based per-image scaling (2^{nd}–98^{th})
+    instead of brittle min/max.  The log-ratio stays scale-invariant.
 
     Each item (train):
         image     : [3, H, W] tensor (Resize→ToTensor→Normalize)
@@ -161,27 +199,7 @@ class GOOSynthDepth(torch.utils.data.Dataset):
 
     @staticmethod
     def _sample_anchored(depth_pil, gazex_norm, gazey_norm, bbox_norm):
-        """Sample two scalars from a per-image-normalised 64×64 depth map.
-
-        Returns (gt_z_gaze, gt_z_head).  Both lie in [0, 1] under the same
-        per-image min-max normalisation, so their log-ratio is invariant
-        to per-image rescaling.
-        """
-        depth_64 = depth_pil.resize((64, 64), Image.BILINEAR)
-        d_arr = np.asarray(depth_64, dtype=np.float32)
-        d_min, d_max = float(d_arr.min()), float(d_arr.max())
-        d_norm = (d_arr - d_min) / (d_max - d_min + 1e-8)
-
-        u_g = int(np.clip(round(gazex_norm * 63), 0, 63))
-        v_g = int(np.clip(round(gazey_norm * 63), 0, 63))
-        gt_z_gaze = float(d_norm[v_g, u_g])
-
-        hcx = (bbox_norm[0] + bbox_norm[2]) * 0.5
-        hcy = (bbox_norm[1] + bbox_norm[3]) * 0.5
-        u_h = int(np.clip(round(hcx * 63), 0, 63))
-        v_h = int(np.clip(round(hcy * 63), 0, 63))
-        gt_z_head = float(d_norm[v_h, u_h])
-        return gt_z_gaze, gt_z_head
+        return sample_anchored_depth_gt(depth_pil, gazex_norm, gazey_norm, bbox_norm)
 
     def __getitem__(self, idx):
         frame = self.frames[idx]

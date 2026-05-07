@@ -11,8 +11,9 @@ Renders a 2×3 panel per sample suitable for figures in the paper manuscript:
               region the model attends to in 3-D.
     Panel E — Z-bar showing predicted z_head and z_gaze and their log-ratio
               alongside the GT values, anchored at the head depth.
-    Panel F — Predicted dense depth map, when the model uses
-              ``refine_cond="dense"``; otherwise blank with an annotation.
+    Panel F — Predicted auxiliary depth map when ``refine_cond`` is
+              ``"dense"`` (channel-mean decoder feat) or ``"dense_head"``
+              (sigmoid depth plane used for ``z_gaze``); blank otherwise.
 
 Usage modes
 -----------
@@ -68,6 +69,7 @@ from matplotlib.patches import Rectangle
 from PIL import Image
 
 from network.network_builder_gt3d import get_gt3d_model
+from train_depth_goo import sample_anchored_depth_gt
 
 
 # --------------------------------------------------------------------------
@@ -110,8 +112,8 @@ def run_inference(model, image_pil: Image.Image, bbox_norm, transform, device):
     z_g  = float(out["depth_gaze"][0][0].item())
     z_h  = float(out["depth_head"][0][0].item())
 
-    # Optional dense map — only present when refine_cond == "dense"; we
-    # intercept it via a forward hook instead of changing the model API.
+    # Optional dense map for plotting — hooks set ``model._last_dense_depth``
+    # for refine_cond ``dense`` or ``dense_head``.
     dense_map = getattr(model, "_last_dense_depth", None)
     return {
         "heatmap":     hm,
@@ -122,22 +124,30 @@ def run_inference(model, image_pil: Image.Image, bbox_norm, transform, device):
 
 
 def _attach_dense_hook(model):
-    """Cache the dense depth feature so we can visualise it.
+    """Cache auxiliary depth maps on ``model._last_dense_depth`` for plotting.
 
-    Mean-aggregates across the channel axis to a single (h, w) map and
-    stashes it on ``model._last_dense_depth``.
+    * ``refine_cond == "dense"`` — mean over K decoder channels before bilinear resize.
+    * ``dense_head`` — the sigmoid depth plane from ``depth_gaze_plane_head``.
     """
-    if not getattr(model, "use_refine", False):
-        return
-    if getattr(model, "refine_cond", "scalar") != "dense":
+    setattr(model, "_last_dense_depth", None)
+
+    if getattr(model, "refine_cond", "scalar") == "dense" and getattr(
+            model, "use_refine", False):
+        def _hook(_module, _inp, out):
+            m = out.detach().mean(dim=1).cpu().numpy()
+            model._last_dense_depth = m[0]
+
+        if hasattr(model, "dense_depth_decoder"):
+            model.dense_depth_decoder.register_forward_hook(_hook)
         return
 
-    def _hook(_module, _inp, out):
-        # out: [B', K, 2h, 2w]
-        m = out.detach().mean(dim=1).cpu().numpy()       # [B', 2h, 2w]
-        model._last_dense_depth = m[0]                   # first sample
+    if getattr(model, "use_dense_head_gaze", False) and hasattr(
+            model, "depth_gaze_plane_head"):
+        def _hook_plane(_module, _inp, out):
+            # out: [B', 1, H', W'] after Sigmoid in the Sequential
+            model._last_dense_depth = out[0, 0].detach().cpu().numpy()
 
-    model.dense_depth_decoder.register_forward_hook(_hook)
+        model.depth_gaze_plane_head.register_forward_hook(_hook_plane)
 
 
 # --------------------------------------------------------------------------
@@ -258,8 +268,8 @@ def render_panel(
         axF.set_title("Predicted dense depth feature\n(refine_cond=\"dense\")")
     else:
         axF.text(0.5, 0.5,
-                 "Dense depth not available\n(model uses scalar/pair refine\n"
-                 "or refinement is off)",
+                 "Auxiliary depth map not captured\n(enable dense / dense_head\n"
+                 "or hook in run_inference)",
                  ha="center", va="center", fontsize=9,
                  transform=axF.transAxes)
         axF.set_title("Predicted dense depth")
@@ -322,20 +332,10 @@ def _load_cached_depth(image_path_abs: str, dataset_root: str,
 
 def _sample_anchored_gt_z(depth_arr: np.ndarray, gx_norm: float, gy_norm: float,
                           bbox_norm) -> Tuple[float, float]:
-    """Mirror of GOOSynthDepth._sample_anchored at 64×64 grid."""
-    d_pil = Image.fromarray(depth_arr, mode="F").resize((64, 64), Image.BILINEAR)
-    d = np.asarray(d_pil, dtype=np.float32)
-    lo, hi = float(d.min()), float(d.max())
-    n = (d - lo) / max(hi - lo, 1e-8)
-    u = int(np.clip(round(gx_norm * 63), 0, 63))
-    v = int(np.clip(round(gy_norm * 63), 0, 63))
-    z_g = float(n[v, u])
-    cx = (bbox_norm[0] + bbox_norm[2]) * 0.5
-    cy = (bbox_norm[1] + bbox_norm[3]) * 0.5
-    uh = int(np.clip(round(cx * 63), 0, 63))
-    vh = int(np.clip(round(cy * 63), 0, 63))
-    z_h = float(n[vh, uh])
-    return z_g, z_h
+    """Match training-time ``sample_anchored_depth_gt`` (percentile + Gaussian)."""
+    pil = Image.fromarray(
+        np.ascontiguousarray(depth_arr.astype(np.float32)), mode="F")
+    return sample_anchored_depth_gt(pil, gx_norm, gy_norm, bbox_norm)
 
 
 def _iter_goosynth(data_path: str, split: str):

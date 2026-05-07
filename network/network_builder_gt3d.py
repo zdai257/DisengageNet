@@ -17,9 +17,14 @@ around three ideas:
     variants are available (``refine_cond``):
 
        * ``"scalar"`` — broadcast the log-ratio scalar (1-channel)
-       * ``"pair"``   — broadcast ``[log z_gaze, log z_head]``  (2-channel)
+       * ``"pair"``   — two centred channels encoding the anchored log-ratio
+                        (broadcast; zero-init ``depth_to_feat`` at train start)
        * ``"dense"``  — predict a low-rank dense depth feature from the
                         trunk and project it back into the trunk dim
+       * ``"dense_head"`` — no gaze depth token; a dense plane head predicts a
+                         per-pixel relative depth map, and ``z_gaze`` is a
+                         soft-argmax-weighted expectation over that plane
+                         w.r.t. the heatmap — couples depth at the gaze peak
 
 Module layout is named so that a 4-bucket optimiser dispatch (substrings
 ``inout`` / ``depth`` / ``block`` / ``fuse``) routes every *trainable*
@@ -76,22 +81,24 @@ class GT3D(nn.Module):
         out_size          : output heatmap (H, W).
         use_refine        : enable the depth → heatmap refinement loop.
         refine_cond       : conditioning signal when ``use_refine`` is on:
-                            ``"scalar"`` (1-channel log-ratio),
-                            ``"pair"``   (2-channel ``[log z_g, log z_h]``),
-                            ``"dense"``  (low-rank dense depth feature).
+                            ``"scalar"``, ``"pair"``, ``"dense"``, or
+                            ``"dense_head"`` (see module docstring).
         num_refine_layers : number of refinement transformer blocks.
         dense_depth_dim   : channels of the dense depth feature
                             (only used when ``refine_cond == "dense"``).
+        soft_argmax_tau   : temperature for soft-argmax in ``dense_head``
+                            (Sharper softmax when larger).
     """
 
-    SUPPORTED_REFINE_COND = ("scalar", "pair", "dense")
+    SUPPORTED_REFINE_COND = ("scalar", "pair", "dense", "dense_head")
 
     def __init__(self, backbone, inout=True, dim=256, num_layers=3,
                  in_size=(448, 448), out_size=(64, 64),
                  use_refine=False,
                  refine_cond="scalar",
                  num_refine_layers=1,
-                 dense_depth_dim=32):
+                 dense_depth_dim=32,
+                 soft_argmax_tau=8.0):
         super().__init__()
         self.backbone = backbone
         self.dim = dim
@@ -103,10 +110,11 @@ class GT3D(nn.Module):
         self.use_refine        = bool(use_refine)
         self.num_refine_layers = int(num_refine_layers) if self.use_refine else 0
         self.dense_depth_dim   = int(dense_depth_dim)
-        if self.use_refine:
-            assert refine_cond in self.SUPPORTED_REFINE_COND, (
-                f"refine_cond must be one of {self.SUPPORTED_REFINE_COND}, "
-                f"got {refine_cond!r}")
+        self.soft_argmax_tau   = float(soft_argmax_tau)
+        self.use_dense_head_gaze = (refine_cond == "dense_head")
+        assert refine_cond in self.SUPPORTED_REFINE_COND, (
+            f"refine_cond must be one of {self.SUPPORTED_REFINE_COND}, "
+            f"got {refine_cond!r}")
         self.refine_cond = refine_cond
 
         # ------------------------------------------------------------------
@@ -129,10 +137,11 @@ class GT3D(nn.Module):
         ])
 
         # ------------------------------------------------------------------
-        # Anchored depth: two parallel query tokens (gaze target + head
-        # reference), shared scalar MLP.  Only their log-ratio is supervised.
+        # Anchored depth: gaze either from a CLS-style token (“scalar/pair/
+        # dense”) or from a dense plane + soft-argmax (“dense_head”).
         # ------------------------------------------------------------------
-        self.depth_token_gaze = nn.Embedding(1, self.dim)
+        if not self.use_dense_head_gaze:
+            self.depth_token_gaze = nn.Embedding(1, self.dim)
         self.depth_token_head = nn.Embedding(1, self.dim)
         self.depth_scalar_head = nn.Sequential(
             nn.Linear(self.dim, 128),
@@ -148,6 +157,14 @@ class GT3D(nn.Module):
         #   use_refine = True  → refine stack + ``depth_refined_heatmap_head``.
         # The ``depth_`` prefix puts both heads in the depth_lr bucket.
         # ------------------------------------------------------------------
+        if self.use_dense_head_gaze:
+            # Per-pixel plane in [0,1]; same decoder layout as heatmap trunk.
+            self.depth_gaze_plane_head = nn.Sequential(
+                nn.ConvTranspose2d(dim, dim, kernel_size=2, stride=2),
+                nn.Conv2d(dim, 1, kernel_size=1, bias=False),
+                nn.Sigmoid(),
+            )
+
         if not self.use_refine:
             self.depth_heatmap_head = nn.Sequential(
                 nn.ConvTranspose2d(dim, dim, kernel_size=2, stride=2),
@@ -164,8 +181,21 @@ class GT3D(nn.Module):
                 nn.Conv2d(dim, 1, kernel_size=1, bias=False),
                 nn.Sigmoid(),
             )
+            # ``dense_head`` needs a coarse heatmap before refinement to form
+            # the soft-argmax weights for ``z_gaze``.
+            if self.use_dense_head_gaze:
+                self.depth_coarse_heatmap_head = nn.Sequential(
+                    nn.ConvTranspose2d(dim, dim, kernel_size=2, stride=2),
+                    nn.Conv2d(dim, 1, kernel_size=1, bias=False),
+                    nn.Sigmoid(),
+                )
             in_ch = self._cond_channels(self.refine_cond, self.dense_depth_dim)
             self.depth_to_feat = nn.Conv2d(in_ch, self.dim, kernel_size=1)
+            # Residual-conditioning starts equivalent to identity (no perturbation
+            # until optimisation moves ``depth_to_feat`` away from zero) — avoids
+            # pair / dense initialisation explosions.
+            nn.init.zeros_(self.depth_to_feat.weight)
+            nn.init.zeros_(self.depth_to_feat.bias)
             if self.refine_cond == "dense":
                 self.dense_depth_decoder = nn.Sequential(
                     nn.ConvTranspose2d(self.dim, self.dim,
@@ -196,10 +226,12 @@ class GT3D(nn.Module):
             return 2
         if refine_cond == "dense":
             return int(dense_depth_dim)
+        if refine_cond == "dense_head":
+            return 1
         raise ValueError(f"Unknown refine_cond: {refine_cond!r}")
 
     # ----------------------------------------------------------------------
-    def _build_cond(self, x_feat, z_gaze, z_head):
+    def _build_cond(self, x_feat, z_gaze, z_head, z_plane_64=None):
         """Build the (B', C, h, w) conditioning tensor for the refine path."""
         h, w = self.featmap_h, self.featmap_w
         eps = 1e-4
@@ -208,9 +240,21 @@ class GT3D(nn.Module):
                          - torch.log(z_head.clamp(min=eps)))         # [B']
             cond = log_ratio.view(-1, 1, 1, 1).expand(-1, 1, h, w)
         elif self.refine_cond == "pair":
-            log_zg = torch.log(z_gaze.clamp(min=eps)).view(-1, 1, 1, 1)
-            log_zh = torch.log(z_head.clamp(min=eps)).view(-1, 1, 1, 1)
-            cond = torch.cat([log_zg, log_zh], dim=1).expand(-1, 2, h, w)
+            # Centred symmetric pair degenerates to zero conditioning at init
+            # (log z_g ≈ log z_h) — avoids a random large residual from
+            # ``depth_to_feat`` while still allowing an ``absolute level'' DoF
+            # once (z_g, z_h) diverge.
+            lz_g = torch.log(z_gaze.clamp(min=eps))
+            lz_h = torch.log(z_head.clamp(min=eps))
+            log_mean = 0.5 * (lz_g + lz_h)
+            c_g = (lz_g - log_mean).view(-1, 1, 1, 1).expand(-1, 1, h, w)
+            c_h = (lz_h - log_mean).view(-1, 1, 1, 1).expand(-1, 1, h, w)
+            cond = torch.cat([c_g, c_h], dim=1)
+        elif self.refine_cond == "dense_head":
+            assert z_plane_64 is not None, "dense_head refine needs z_plane_64"
+            cond = F.interpolate(
+                z_plane_64.unsqueeze(1), size=(h, w),
+                mode="bilinear", align_corners=False)
         else:                                                          # "dense"
             dense = self.dense_depth_decoder(x_feat)                   # [B', K, 2h, 2w]
             cond = F.interpolate(dense, size=(h, w),
@@ -239,20 +283,21 @@ class GT3D(nn.Module):
         x_seq = x.flatten(start_dim=2).permute(0, 2, 1)  # b c h w -> b (h w) c
 
         # ----- Prepend special tokens in fixed order ---------------------
-        # Order: [inout?, depth_token_gaze, depth_token_head, ...spatial]
         prefix_tokens = []
         if self.inout:
             prefix_tokens.append(
                 self.inout_token.weight.unsqueeze(0).repeat(x_seq.shape[0], 1, 1))
-        prefix_tokens.append(
-            self.depth_token_gaze.weight.unsqueeze(0).repeat(x_seq.shape[0], 1, 1))
+        if not self.use_dense_head_gaze:
+            prefix_tokens.append(
+                self.depth_token_gaze.weight.unsqueeze(0).repeat(
+                    x_seq.shape[0], 1, 1))
         prefix_tokens.append(
             self.depth_token_head.weight.unsqueeze(0).repeat(x_seq.shape[0], 1, 1))
         x_seq = torch.cat(prefix_tokens + [x_seq], dim=1)
 
         x_seq = self.trunk_blocks(x_seq)
 
-        # ----- Peel off special tokens in matching order -----------------
+        # ----- Peel off special tokens -----------------------------------
         offset = 0
         if self.inout:
             inout_tok = x_seq[:, offset, :]
@@ -262,9 +307,17 @@ class GT3D(nn.Module):
         else:
             inout_preds = None
 
-        z_gaze = self.depth_scalar_head(x_seq[:, offset,     :]).squeeze(dim=-1)
-        z_head = self.depth_scalar_head(x_seq[:, offset + 1, :]).squeeze(dim=-1)
-        offset += 2
+        z_head = None
+        z_gaze_unused = None
+        if self.use_dense_head_gaze:
+            z_head = self.depth_scalar_head(x_seq[:, offset, :]).squeeze(dim=-1)
+            offset += 1
+        else:
+            z_gaze_unused = self.depth_scalar_head(
+                x_seq[:, offset, :]).squeeze(dim=-1)
+            z_head = self.depth_scalar_head(
+                x_seq[:, offset + 1, :]).squeeze(dim=-1)
+            offset += 2
 
         x_seq = x_seq[:, offset:, :]
 
@@ -273,12 +326,39 @@ class GT3D(nn.Module):
             x_seq.shape[0], self.featmap_h, self.featmap_w, x_seq.shape[2]
         ).permute(0, 3, 1, 2)
 
+        tau = float(self.soft_argmax_tau)
+        z_plane_r = None
+
+        if self.use_dense_head_gaze:
+            z_plane_dec = self.depth_gaze_plane_head(x_feat).squeeze(dim=1)
+            z_plane_r = torchvision.transforms.functional.resize(
+                z_plane_dec, self.out_size)
+            # Coarse heatmap used as soft-argmask over z_plane → z_gaze
+            if not self.use_refine:
+                h_coarse_raw = self.depth_heatmap_head(x_feat).squeeze(dim=1)
+            else:
+                h_coarse_raw = self.depth_coarse_heatmap_head(
+                    x_feat).squeeze(dim=1)
+            h_coarse_res = torchvision.transforms.functional.resize(
+                h_coarse_raw, self.out_size)
+            flat_logits = h_coarse_res.flatten(1) * tau
+            wm = torch.softmax(flat_logits, dim=1).view_as(h_coarse_res)
+            z_gaze = (z_plane_r * wm).sum(dim=(1, 2))
+        else:
+            z_gaze = z_gaze_unused
+
         # ----- Heatmap path ----------------------------------------------
         if not self.use_refine:
-            h_out = self.depth_heatmap_head(x_feat).squeeze(dim=1)
+            if self.use_dense_head_gaze:
+                h_out = h_coarse_raw
+            else:
+                h_out = self.depth_heatmap_head(x_feat).squeeze(dim=1)
         else:
-            cond       = self._build_cond(x_feat, z_gaze, z_head)         # [B', C, h, w]
-            depth_feat = self.depth_to_feat(cond)                          # [B', dim, h, w]
+            z_plane_kw = None
+            if self.refine_cond == "dense_head":
+                z_plane_kw = z_plane_r
+            cond = self._build_cond(x_feat, z_gaze, z_head, z_plane_kw)
+            depth_feat = self.depth_to_feat(cond)
             x_refined  = x_feat + depth_feat
             x_refined  = x_refined.flatten(start_dim=2).permute(0, 2, 1)
             x_refined  = self.refine_blocks(x_refined)
@@ -363,9 +443,10 @@ def get_gt3d_model(configuration):
 
     Optional architectural flags read from ``configuration["model"]``:
         use_refine        (bool, default False)
-        refine_cond       (str,  default "scalar"; one of scalar|pair|dense)
-        num_refine_layers (int,  default 1)
-        dense_depth_dim   (int,  default 32; only used when refine_cond=="dense")
+        refine_cond       (str, default "scalar"; scalar|pair|dense|dense_head)
+        num_refine_layers (int, default 1)
+        dense_depth_dim   (int, default 32; only used when refine_cond=="dense")
+        soft_argmax_tau   (float, default 8.0; softmax temperature for dense_head)
     """
     factory = {
         "gt3d_dinov2_vitb14":          gt3d_dinov2_vitb14,
@@ -381,6 +462,7 @@ def get_gt3d_model(configuration):
         refine_cond       = str (cfg.get("refine_cond",       "scalar")),
         num_refine_layers = int (cfg.get("num_refine_layers", 1)),
         dense_depth_dim   = int (cfg.get("dense_depth_dim",   32)),
+        soft_argmax_tau   = float(cfg.get("soft_argmax_tau",  8.0)),
     )
 
 

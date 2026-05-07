@@ -54,6 +54,7 @@ from train_depth_goo import (
     DEPTH_HUBER_DELTA,
     LOSS_SCALAR,
     FocalLoss,
+    sample_anchored_depth_gt,
     _bbox_jitter,
     _joint_horiz_flip,
     _joint_random_crop,
@@ -134,22 +135,7 @@ class GazeFollowDepth(torch.utils.data.Dataset):
 
     @staticmethod
     def _sample_anchored(depth_pil, gazex_norm, gazey_norm, bbox_norm):
-        """Per-image-normalised (gt_z_gaze, gt_z_head) at 64×64 grid."""
-        d_arr = np.asarray(depth_pil.resize((64, 64), Image.BILINEAR),
-                           dtype=np.float32)
-        d_min, d_max = float(d_arr.min()), float(d_arr.max())
-        d_norm = (d_arr - d_min) / (d_max - d_min + 1e-8)
-
-        u_g = int(np.clip(round(gazex_norm * 63), 0, 63))
-        v_g = int(np.clip(round(gazey_norm * 63), 0, 63))
-        gt_z_gaze = float(d_norm[v_g, u_g])
-
-        hcx = (bbox_norm[0] + bbox_norm[2]) * 0.5
-        hcy = (bbox_norm[1] + bbox_norm[3]) * 0.5
-        u_h = int(np.clip(round(hcx * 63), 0, 63))
-        v_h = int(np.clip(round(hcy * 63), 0, 63))
-        gt_z_head = float(d_norm[v_h, u_h])
-        return gt_z_gaze, gt_z_head
+        return sample_anchored_depth_gt(depth_pil, gazex_norm, gazey_norm, bbox_norm)
 
     # --------------------------------------------------------------------
     def __getitem__(self, idx):
