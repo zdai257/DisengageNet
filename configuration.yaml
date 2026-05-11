@@ -13,7 +13,9 @@ model:
   reduction: "mean"  #"mean" or "none"
   bce_weight: 0.0  # 0.1 for ChildPlay; disable for GOO(?) and GazeFollow
   mse_weight: 1.0
-  depth_weight: 0.5  # Between 0.2 to 1.0. The default 0.5 is a defensible mid-point
+  depth_weight: 0.5  # Legacy fallback if depth_weight_start omitted
+  depth_weight_start: 0.5  # GazeFollow pretrain: linear schedule → depth_weight_end
+  depth_weight_end: 0.1
   angle_weight: 0.0  # 0.05 / 0.1
   vec_weight: 0.0
   kld_weight: 0.0  # 0.01, 0.02, 0.05, 0.1 [0.0, 0.02, 0.05, 0.1]
@@ -67,13 +69,18 @@ train:
   pre_fuse_lr: 0.001
   pre_block_lr: 0.001
   pre_batch_size: 60   # 60
-  pre_epochs: 15   # 15
+  pre_epochs: 25
   pre_optimizer: "Adam"
+  # Staged DINOv2: 0 = train last N blocks from epoch 0; else unfreeze at this 0-based epoch index
+  backbone_unfreeze_start_epoch: 1000
+  backbone_train_last_blocks: 4
+  pre_backbone_lr: 0.000005
   pre_lr_scheduler:
-    type: "cosine"                  # cosine / linear
-    step_size: 15                   # Step size for step scheduler
-    gamma: 0.1                      # Decay factor for step/exponential scheduler
-    min_lr: 1e-7                    # Minimum learning rate for cosine/other schedulers
+    type: "warmup_cosine"           # warmup_cosine | cosine | warmup | StepLR-compatible keys
+    warmup_epochs: 2
+    step_size: 15                   # used by cosine / step branches only
+    gamma: 0.1
+    min_lr: 1e-7
 
 eval:
   checkpoint: ""                    # Path to the checkpoint for Eval
@@ -83,8 +90,8 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/GT3D_goosynthV3/"           # auto naming
-  pre_dir: "results/pretrainGT3D_goosynthV3/"
+  log_dir: "results/GT3D_GF_densehead-freezeBackbone/"           # auto naming
+  pre_dir: "results/pretrainGT3D_GF_densehead-freezeBackbone/"
   save_every: 5
 
 hardware:
