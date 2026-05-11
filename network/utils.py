@@ -503,6 +503,73 @@ def get_heatmap(gazex, gazey, height, width, sigma=3, htype="Gaussian"):
     return img
 
 
+def get_depthaware_heatmap(depth_map, gazex, gazey, height, width, sigma=3, htype="Gaussian"):
+
+    depth_decay = 0.02
+    blend_weight = 0.5
+
+    img = torch.zeros(height, width)
+    # Convert depth_map to tensor if it's numpy array
+    if isinstance(depth_map, np.ndarray):
+        depth_map = torch.from_numpy(depth_map).float()
+    
+    if gazex < 0 or gazey < 0:  # return empty map if out of frame
+        return img
+    gazex = int(gazex * width)
+    gazey = int(gazey * height)
+
+    # Check that any part of the gaussian is in-bounds
+    ul = [int(gazex - 3 * sigma), int(gazey - 3 * sigma)]
+    br = [int(gazex + 3 * sigma + 1), int(gazey + 3 * sigma + 1)]
+    if ul[0] >= img.shape[1] or ul[1] >= img.shape[0] or br[0] < 0 or br[1] < 0:
+        # If not, just return the image as is
+        return img
+
+    # Generate gaussian
+    size = 6 * sigma + 1
+    x = np.arange(0, size, 1, float)
+    y = x[:, np.newaxis]
+    x0 = y0 = size // 2
+    # The gaussian is not normalized, we want the center value to equal 1
+    if htype == "Gaussian":
+        g = np.exp(-((x - x0) ** 2 + (y - y0) ** 2) / (2 * sigma**2))
+    elif htype == "Cauchy":
+        g = sigma / (((x - x0) ** 2 + (y - y0) ** 2 + sigma**2) ** 1.5)
+
+    # Usable gaussian range
+    g_x = max(0, -ul[0]), min(br[0], img.shape[1]) - ul[0]
+    g_y = max(0, -ul[1]), min(br[1], img.shape[0]) - ul[1]
+    # Image range
+    img_x = max(0, ul[0]), min(br[0], img.shape[1])
+    img_y = max(0, ul[1]), min(br[1], img.shape[0])
+
+    img[img_y[0] : img_y[1], img_x[0] : img_x[1]] += g[g_y[0] : g_y[1], g_x[0] : g_x[1]]
+    depth_map = 1.0/ (1.0 + depth_map) #normalise and invert so that closer points have higher values
+    gaussian = img.clone()
+    
+    
+    gaze_depth = depth_map[
+        min(gazey, depth_map.shape[0] - 1),
+        min(gazex, depth_map.shape[1] - 1)
+    ]
+
+    depth_diff = (depth_map - gaze_depth) / (depth_map.max() + 1e-6) #differnce between depth and gaze depth, and normalised
+    depth_weight = torch.exp(-(depth_diff ** 2) / (2 * depth_decay ** 2)) #convert depth difference to weight - similar depth points to gaze point have higher weight
+
+    #Add depth to the area of the gaussian blur
+    mask = gaussian > 0
+    mask_img = gaussian.clone() 
+    mask_img[mask] = gaussian[mask] * depth_weight[mask] # depth map in gaussian area
+    
+    #Blend guassian with depth map
+    img = (1 - blend_weight) * gaussian + blend_weight * mask_img
+
+    if img.max() > 0:
+        img = img / img.max()
+
+    return img
+
+
 # GazeFollow calculates AUC using original image size with GT (x,y) coordinates set to 1 and everything else as 0
 # References:
 # https://github.com/ejcgt/attention-target-detection/blob/acd264a3c9e6002b71244dea8c1873e5c5818500/eval_on_gazefollow.py#L78
