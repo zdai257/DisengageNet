@@ -30,10 +30,9 @@ model:
   depth_loss: "si_log"  # log_huber vs. si_log
   lambda_si: 0.5     # 0.0 ≡ log-MSE; 1.0 ≡ pure variance-of-d; 0.5 ≡ Eigen recommended
   use_refine: True
-  refine_cond: "dense_head"   # scalar | pair | dense | dense_head
+  refine_cond: "scalar"   # "scalar" (1-ch log-ratio) | "pair" (2-ch log z_g/z_h) | "dense" (low-rank dense feat)
   num_refine_layers: 2
   dense_depth_dim: 32     # only used when refine_cond == "dense"
-  soft_argmax_tau: 8.0    # softmax temperature on coarse heatmap (dense_head only)
 
 data:
   input_resolution: 448
@@ -54,7 +53,7 @@ train:
   lr: 0.001                         # heatmap_head, refined_heatmap_head, pos_embed
   inout_lr: 0.001
   depth_lr: 0.001
-  fuse_lr: 0.0002
+  fuse_lr: 0.001
   block_lr: 0.001
   layer_decay: 0                    # 0 or 1
   optimizer: "Adam"                # Optimizer type (adam, adamw, sgd, etc.)
@@ -91,8 +90,8 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/GT3D_goosynthV3_densehead/"           # auto naming
-  pre_dir: "results/pretrainGT3D_goosynthV3_densehead/"
+  log_dir: "results/GT3D_goosynthV3/"           # auto naming
+  pre_dir: "results/pretrainGT3D_goosynthV3/"
   save_every: 5
 
 hardware:
