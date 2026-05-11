@@ -509,9 +509,20 @@ def get_depthaware_heatmap(depth_map, gazex, gazey, height, width, sigma=3, htyp
     blend_weight = 0.5
 
     img = torch.zeros(height, width)
+    
     # Convert depth_map to tensor if it's numpy array
     if isinstance(depth_map, np.ndarray):
         depth_map = torch.from_numpy(depth_map).float()
+
+    # Resize depth_map to 64x64 if it's not already
+    if depth_map.shape[0] != height or depth_map.shape[1] != width:
+        # Use bilinear interpolation for resizing
+        depth_map = torch.nn.functional.interpolate(
+            depth_map.unsqueeze(0).unsqueeze(0), 
+            size=(height, width),
+            mode='bilinear',
+            align_corners=False
+        ).squeeze(0).squeeze(0)
     
     if gazex < 0 or gazey < 0:  # return empty map if out of frame
         return img
