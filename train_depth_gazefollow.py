@@ -28,6 +28,7 @@ Run:
 
 import copy
 import json
+import math
 import os
 import random
 
@@ -330,25 +331,43 @@ def main():
         config=config,
     )
 
-    # ---- Loss weights ------------------------------------------------
-    cfg_model = config["model"]
-    w_heatmap = float(cfg_model.get("mse_weight",   1.0))
-    w_inout   = float(cfg_model.get("bce_weight",   0.0))
-    w_depth   = float(cfg_model.get("depth_weight", 0.5))
-    print(f"Loss weights: heatmap={w_heatmap}  inout={w_inout}  depth={w_depth}")
+    # ---- Loss weights (heatmap / inout fixed; depth scheduled in-loop) -
+    cfg_model     = config["model"]
+    w_heatmap     = float(cfg_model.get("mse_weight",   1.0))
+    w_inout       = float(cfg_model.get("bce_weight",   0.0))
+    w_depth_start = float(cfg_model.get(
+        "depth_weight_start", cfg_model.get("depth_weight", 0.5)))
+    w_depth_end   = float(cfg_model.get("depth_weight_end", 0.2))
+    print(f"Loss weights: heatmap={w_heatmap}  inout={w_inout}  "
+          f"depth(sched) {w_depth_start} → {w_depth_end} over epochs")
 
     # ---- Model -------------------------------------------------------
     model, _ = get_gt3d_model(config)
     print(f"Model: {cfg_model['name']}")
+
+    # ---- Backbone staged unfreeze (last N DINOv2 blocks) ---------------
+    uf_ep     = int(config["train"].get("backbone_unfreeze_start_epoch",
+                                        10**9))
+    last_blk  = int(config["train"].get("backbone_train_last_blocks", 4))
+    pre_bb_lr = float(config["train"].get("pre_backbone_lr", 5e-5))
+    if uf_ep <= 0:
+        model.backbone.configure_trainable_blocks(last_blk)
+        print(f"Backbone: train last {last_blk} block(s) from epoch 0 "
+              f"(lr={pre_bb_lr})")
+    else:
+        model.backbone.configure_trainable_blocks(0)
+        print(f"Backbone: frozen until epoch {uf_ep}, then last {last_blk} "
+              f"block(s) at lr={pre_bb_lr}")
 
     pretrained = cfg_model.get("pretrained_path", "")
     if pretrained and os.path.isfile(pretrained):
         print(f"Loading warm-start weights from {pretrained}")
         model.load_gt3d_state_dict(
             torch.load(pretrained, map_location=device, weights_only=True))
-
-    for name, param in model.named_parameters():
-        param.requires_grad = "backbone" not in name
+        if uf_ep <= 0:
+            model.backbone.configure_trainable_blocks(last_blk)
+        else:
+            model.backbone.configure_trainable_blocks(0)
 
     if not pretrained:
         for name, param in model.named_parameters():
@@ -383,7 +402,9 @@ def main():
     for n, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        if "inout" in n:
+        if "backbone" in n:
+            lr = pre_bb_lr
+        elif "inout" in n:
             lr = pre_inout_lr
         elif "depth" in n:
             lr = pre_depth_lr
@@ -404,9 +425,33 @@ def main():
     else:
         raise ValueError(f"Unsupported optimizer: {opt_name}")
 
-    # ---- Scheduler ---------------------------------------------------
+    # ---- Scheduler (GazeFollow: warmup + cosine decay by default) -------
+    pre_epochs = int(config["train"].get("pre_epochs",
+                                         config["train"]["epochs"]))
     sched = config["train"].get("pre_lr_scheduler", config["train"]["lr_scheduler"])
-    if sched["type"] == "cosine":
+
+    def _make_warmup_cosine_lambda(total_ep, warmup_ep, eta, ref_lr):
+        def lr_lambda(epoch: int):
+            if epoch < warmup_ep:
+                return max((epoch + 1) / float(warmup_ep), 1e-8)
+            t = epoch - warmup_ep
+            T = max(total_ep - warmup_ep - 1, 1)
+            cos_f = 0.5 * (1.0 + math.cos(math.pi * min(t / T, 1.0)))
+            em = eta / max(ref_lr, 1e-12)
+            return em + (1.0 - em) * cos_f
+        return lr_lambda
+
+    if sched["type"] == "warmup_cosine":
+        warmup_epochs = int(sched.get("warmup_epochs", 3))
+        eta_min_sched = float(sched.get("min_lr", 1e-7))
+        scheduler = LambdaLR(
+            optimizer,
+            lr_lambda=_make_warmup_cosine_lambda(
+                pre_epochs, warmup_epochs, eta_min_sched, pre_lr),
+        )
+        print(f"LR schedule: warmup_cosine  warmup_epochs={warmup_epochs}  "
+              f"total_epochs={pre_epochs}  cosine→min_lr={eta_min_sched}")
+    elif sched["type"] == "cosine":
         scheduler = CosineAnnealingLR(
             optimizer, T_max=sched["step_size"], eta_min=float(sched["min_lr"]))
     elif sched["type"] == "warmup":
@@ -479,7 +524,8 @@ def main():
             "lr"  + str(pre_lr),
             "hw"  + str(w_heatmap),
             "iw"  + str(w_inout),
-            "dw"  + str(w_depth),
+            "dw"  + str(w_depth_start).replace(".", "p") + "to"
+                  + str(w_depth_end).replace(".", "p"),
             depth_loss_name,
         ]),
     )
@@ -487,14 +533,33 @@ def main():
     print(f"Checkpoints → {ckpt_dir}")
 
     # ---- Training loop -----------------------------------------------
-    pre_epochs = int(config["train"].get("pre_epochs",
-                                         config["train"]["epochs"]))
     save_every = int(config["logging"]["save_every"])
     log_every  = int(config["logging"].get("log_every", save_every))
-    best_l2    = float("inf")
-    best_path  = None
+    best_l2           = float("inf")
+    best_path         = None
+    backbone_stage_ok = False
 
     for epoch in range(pre_epochs):
+        # --- Staged backbone unfreeze (0-based epoch index) -------------
+        if uf_ep > 0 and epoch == uf_ep and not backbone_stage_ok:
+            model.backbone.configure_trainable_blocks(last_blk)
+            bb_params = [
+                p for nm, p in model.named_parameters()
+                if "backbone" in nm and p.requires_grad
+            ]
+            if bb_params:
+                optimizer.add_param_group({
+                    "params":       bb_params,
+                    "lr":           pre_bb_lr,
+                    "weight_decay": wd,
+                })
+            backbone_stage_ok = True
+            print(f"Epoch {epoch}: unfroze last {last_blk} backbone block(s); "
+                  f"added {len(bb_params)} params to optimiser")
+
+        den = max(pre_epochs - 1, 1)
+        w_depth = w_depth_start + (w_depth_end - w_depth_start) * (epoch / den)
+
         model.train()
         sums = {"total": 0.0, "hm": 0.0, "io": 0.0, "depth": 0.0}
 
@@ -548,6 +613,8 @@ def main():
                     "train/heatmap_loss": l_hm.item(),
                     "train/inout_loss":   float(l_io.item()),
                     "train/depth_loss":   l_depth.item(),
+                    "train/w_depth":      w_depth,
+                    "train/lr":           optimizer.param_groups[0]["lr"],
                 })
 
         scheduler.step()
@@ -556,7 +623,8 @@ def main():
               f"Total={sums['total']/n:.6f}  "
               f"HM={sums['hm']/n:.6f}  "
               f"IO={sums['io']/n:.6f}  "
-              f"Depth={sums['depth']/n:.6f}")
+              f"Depth={sums['depth']/n:.6f}  "
+              f"w_depth={w_depth:.3f}  lr={optimizer.param_groups[0]['lr']:.2e}")
 
         metrics = evaluate(model, test_loader, device)
         wandb.log({
@@ -568,6 +636,7 @@ def main():
             "eval/delta1":     metrics["delta1"],
             "eval/l2_3d":      metrics["l2_3d"],
             "eval/angle_3d":   metrics["angle_3d"],
+            "epoch/w_depth":   w_depth,
             "epoch":           epoch,
         })
 
