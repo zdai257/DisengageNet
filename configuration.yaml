@@ -1,6 +1,6 @@
 # General Configuration
 model:
-  name: "gt3d_dinov2_vitl14_inout"  # gt3d_dinov2_vit{b14,l14}{,_inout}
+  name: "gazemoe_dinov2_vitl14_inout"  # gt3d_dinov2_vit{b14,l14}{,_inout}
   pretrained_path: ""  #"pretrainShared_epoch_14.pt" or "gazelle_dinov2_vitl14_inout.pt" or "pretrainMoE_MSF1_best.pt"
   mlp_ratio: 1  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size [1, 2, 4]
   num_experts: 4  # Routed experts [3, 4, 6]
@@ -15,11 +15,7 @@ model:
   mse_weight: 1.0
   depth_weight: 0.5  # Legacy fallback if depth_weight_start omitted
   depth_weight_start: 0.5  # GazeFollow pretrain: linear schedule → depth_weight_end
-<<<<<<< HEAD
   depth_weight_end: 0.1
-=======
-  depth_weight_end: 0.2
->>>>>>> parent of 809c3ce... Revert "update 1. scheduling of frozen/learnable backbone's last layers; 2. 30 epochs training; 3. warmup scheduling and schedule depth weight from 0.5-> 0.2"
   angle_weight: 0.0  # 0.05 / 0.1
   vec_weight: 0.0
   kld_weight: 0.0  # 0.01, 0.02, 0.05, 0.1 [0.0, 0.02, 0.05, 0.1]
@@ -73,7 +69,6 @@ train:
   pre_fuse_lr: 0.001
   pre_block_lr: 0.001
   pre_batch_size: 60   # 60
-<<<<<<< HEAD
   pre_epochs: 25
   pre_optimizer: "Adam"
   # Staged DINOv2: 0 = train last N blocks from epoch 0; else unfreeze at this 0-based epoch index
@@ -83,17 +78,6 @@ train:
   pre_lr_scheduler:
     type: "warmup_cosine"           # warmup_cosine | cosine | warmup | StepLR-compatible keys
     warmup_epochs: 2
-=======
-  pre_epochs: 30
-  pre_optimizer: "Adam"
-  # Staged DINOv2: 0 = train last N blocks from epoch 0; else unfreeze at this 0-based epoch index
-  backbone_unfreeze_start_epoch: 10
-  backbone_train_last_blocks: 4
-  pre_backbone_lr: 0.00005
-  pre_lr_scheduler:
-    type: "warmup_cosine"           # warmup_cosine | cosine | warmup | StepLR-compatible keys
-    warmup_epochs: 3
->>>>>>> parent of 809c3ce... Revert "update 1. scheduling of frozen/learnable backbone's last layers; 2. 30 epochs training; 3. warmup scheduling and schedule depth weight from 0.5-> 0.2"
     step_size: 15                   # used by cosine / step branches only
     gamma: 0.1
     min_lr: 1e-7
