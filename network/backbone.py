@@ -32,25 +32,6 @@ class DinoV2Backbone(Backbone):
         super(DinoV2Backbone, self).__init__()
         self.model = torch.hub.load('facebookresearch/dinov2', model_name)
 
-    def configure_trainable_blocks(self, last_n: int):
-        """Freeze the full ViT; optionally learn only the last *last_n* blocks.
-
-        Patch embed, cls token, registers, RoPE, norm before blocks, and all
-        blocks except the last *last_n* stay frozen.  Used for staged
-        fine-tuning (train heads first, then last layers of DINOv2).
-        """
-        for p in self.model.parameters():
-            p.requires_grad = False
-        if last_n <= 0:
-            return
-        if not hasattr(self.model, "blocks"):
-            raise AttributeError("DINOv2 hub model has no `blocks` — check hub version")
-        n_blocks = len(self.model.blocks)
-        last_n = min(int(last_n), n_blocks)
-        for blk in self.model.blocks[-last_n:]:
-            for p in blk.parameters():
-                p.requires_grad = True
-
     def forward(self, x):
         b, c, h, w = x.shape
         out_h, out_w = self.get_out_size((h, w))
