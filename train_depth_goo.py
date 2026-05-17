@@ -324,6 +324,163 @@ def anchored_si_log_loss(pred_z_gaze, pred_z_head, gt_z_gaze, gt_z_head,
 
 
 # --------------------------------------------------------------------------
+# Dense depth distillation, 3-D ray-tracing, and anchored-consistency losses
+# used by train_gazefollow-depthaware.py (GT3D multi-task curriculum).
+# Centralised here so any future depth-aware trainer can import them too.
+# --------------------------------------------------------------------------
+
+def dense_si_log_loss(pred_dense, gt_dense, gaussian_mask=None,
+                      alpha=0.5, lambda_si=0.5, eps=DEPTH_EPS):
+    """Scale-invariant log-loss on a dense depth map (Eigen et al., 2014).
+
+    Both ``pred_dense`` and ``gt_dense`` are assumed to be per-image min-max-
+    normalised to [0, 1] (DepthAnythingV2 inverse-depth convention, no
+    metric units), so only the *log-ratio of pixel pairs* — i.e. the SI-log
+    quantity — is identifiable.
+
+    If ``gaussian_mask`` (the target heatmap) is supplied and ``alpha > 0``,
+    the loss is a convex combination of:
+        L = α · weighted_SI-log   (focus on pixels around the gaze target)
+          + (1 − α) · global_SI-log  (whole-image scene regularisation)
+
+    Shapes:
+        pred_dense, gt_dense : [B, H, W]  or  [B, 1, H, W]
+        gaussian_mask        : [B, H, W]  (non-negative; per-image-normalised
+                                            inside this function)
+    """
+    if pred_dense.dim() == 4:
+        pred_dense = pred_dense.squeeze(1)
+    if gt_dense.dim() == 4:
+        gt_dense = gt_dense.squeeze(1)
+
+    log_p = torch.log(pred_dense.clamp(min=eps))
+    log_g = torch.log(gt_dense.clamp(min=eps))
+    d     = log_p - log_g                                # [B, H, W]
+
+    # Global SI-log over all pixels.
+    d_mean_g  = d.flatten(1).mean(dim=1)                 # [B]
+    d2_mean_g = (d * d).flatten(1).mean(dim=1)           # [B]
+    L_global  = (d2_mean_g - float(lambda_si) * d_mean_g.pow(2)).mean()
+
+    if gaussian_mask is None or alpha <= 0:
+        return L_global
+
+    # Weighted SI-log (focus near the gaze target).
+    w = gaussian_mask.to(d.device).float()
+    w = w / (w.flatten(1).sum(dim=1, keepdim=True)
+             .unsqueeze(-1)
+             .clamp(min=1e-8))                            # [B, H, W], rows sum to 1
+    d_mean_w  = (w * d ).flatten(1).sum(dim=1)            # [B]
+    d2_mean_w = (w * d * d).flatten(1).sum(dim=1)         # [B]
+    L_weighted = (d2_mean_w - float(lambda_si) * d_mean_w.pow(2)).mean()
+
+    return float(alpha) * L_weighted + (1.0 - float(alpha)) * L_global
+
+
+def gaze_ray_3d_loss(pred_heatmap, pred_z_gaze, pred_z_head,
+                     gt_gazex, gt_gazey, gt_z_gaze, gt_z_head,
+                     head_cx, head_cy,
+                     gamma=0.5, w_cos=1.0, w_l1=0.5,
+                     temperature=0.05, eps=DEPTH_EPS, mask=None):
+    """3-D head→target ray-tracing loss in (x, y, log-ratio) space.
+
+    Generalises the 2-D cosine-angle loss currently used in
+    train_gazefollow-depthaware.py: a near distractor and a far true target
+    lying on the same image-plane ray have *different* 3-D ray angles, so
+    the model can disambiguate them via depth.
+
+    Differentiability: the (x, y) component is computed by soft-argmax over
+    ``pred_heatmap`` (temperature ``temperature``), so gradients flow back
+    into the heatmap head.  The z component is the head-anchored log-ratio
+    of the predicted depth scalars, so gradients also flow into the depth
+    heads.
+
+    Inputs (all on the same device):
+        pred_heatmap                  : [B, H, W]  sigmoid heatmap
+        pred_z_gaze, pred_z_head      : [B]        sigmoid depth scalars
+        gt_gazex, gt_gazey            : [B]        in [0, 1]
+        gt_z_gaze, gt_z_head          : [B]        in [0, 1]
+        head_cx, head_cy              : [B]        in [0, 1] (head bbox centre)
+        mask                          : [B] bool   optional (e.g. inout==1)
+
+    ``gamma`` rebalances the dynamic range of the Z axis (log-ratio,
+    typically [-3, 3]) against the X/Y axes ([-1, 1]).  γ ≈ 0.5 is a good
+    starting point.  Sweep in {0.25, 0.5, 1.0}.
+
+    Returns a 0-D tensor.  If ``mask`` is all-False the loss is 0.
+    """
+    B, H, W = pred_heatmap.shape
+
+    # Differentiable 2-D peak via soft-argmax in normalised [0, 1] coords.
+    flat = pred_heatmap.view(B, -1)
+    soft = F.softmax(flat / float(temperature), dim=-1).view(B, H, W)
+    xr   = torch.linspace(0, 1, W, device=pred_heatmap.device).view(1, 1, W).expand(B, H, W)
+    yr   = torch.linspace(0, 1, H, device=pred_heatmap.device).view(1, H, 1).expand(B, H, W)
+    px   = (xr * soft).sum(dim=(1, 2))                    # [B]
+    py   = (yr * soft).sum(dim=(1, 2))                    # [B]
+
+    # Z component: head-anchored log-ratio (dimensionless, scale-invariant).
+    pred_dz = (torch.log(pred_z_gaze.clamp(min=eps))
+               - torch.log(pred_z_head.clamp(min=eps)))
+    gt_dz   = (torch.log(gt_z_gaze.clamp(min=eps))
+               - torch.log(gt_z_head.clamp(min=eps)))
+
+    pred_vec = torch.stack([px       - head_cx,
+                            py       - head_cy,
+                            float(gamma) * pred_dz], dim=-1)   # [B, 3]
+    gt_vec   = torch.stack([gt_gazex - head_cx,
+                            gt_gazey - head_cy,
+                            float(gamma) * gt_dz],   dim=-1)   # [B, 3]
+
+    cos      = F.cosine_similarity(pred_vec, gt_vec, dim=-1)   # [B]
+    l_cos    = (1.0 - cos)
+    l_l1     = (pred_vec - gt_vec).abs().mean(dim=-1)          # [B]
+    per_smp  = float(w_cos) * l_cos + float(w_l1) * l_l1       # [B]
+
+    if mask is not None:
+        m = mask.to(per_smp.device).float()
+        denom = m.sum().clamp(min=1.0)
+        return (per_smp * m).sum() / denom
+    return per_smp.mean()
+
+
+def anchored_consistency_loss(pred_dense, pred_z_gaze, pred_z_head,
+                              gazex_norm, gazey_norm,
+                              head_cx_norm, head_cy_norm):
+    """L2 consistency between the dense decoder and the anchored scalar pair.
+
+    Pulls the dense map's value at the gaze pixel toward ``pred_z_gaze`` and
+    at the head pixel toward ``pred_z_head``.  Cheap regulariser that
+    prevents the two depth pathways from drifting; default-OFF (turn on by
+    setting ``w_consist > 0`` in the config).
+
+    Inputs:
+        pred_dense : [B, H, W] or [B, 1, H, W] in [0, 1]
+        pred_z_gaze, pred_z_head : [B]
+        gazex_norm, gazey_norm, head_cx_norm, head_cy_norm : [B] in [0, 1]
+    """
+    if pred_dense.dim() == 4:
+        pred_dense = pred_dense.squeeze(1)
+    B, H, W = pred_dense.shape
+
+    gx = torch.as_tensor(gazex_norm,    device=pred_dense.device, dtype=torch.float32)
+    gy = torch.as_tensor(gazey_norm,    device=pred_dense.device, dtype=torch.float32)
+    hx = torch.as_tensor(head_cx_norm,  device=pred_dense.device, dtype=torch.float32)
+    hy = torch.as_tensor(head_cy_norm,  device=pred_dense.device, dtype=torch.float32)
+
+    ug = (gx * (W - 1)).round().long().clamp(0, W - 1)
+    vg = (gy * (H - 1)).round().long().clamp(0, H - 1)
+    uh = (hx * (W - 1)).round().long().clamp(0, W - 1)
+    vh = (hy * (H - 1)).round().long().clamp(0, H - 1)
+
+    idx       = torch.arange(B, device=pred_dense.device)
+    z_at_gaze = pred_dense[idx, vg, ug]
+    z_at_head = pred_dense[idx, vh, uh]
+    return ((z_at_gaze - pred_z_gaze).pow(2)
+            + (z_at_head - pred_z_head).pow(2)).mean()
+
+
+# --------------------------------------------------------------------------
 # Anchored evaluation metrics — every metric below is scale-invariant by
 # construction (operates on the log-ratio rather than absolute depth).
 # --------------------------------------------------------------------------

@@ -555,16 +555,25 @@ def get_depthaware_heatmap(depth_map, gazex, gazey, height, width, sigma=3, htyp
     img_y = max(0, ul[1]), min(br[1], img.shape[0])
 
     img[img_y[0] : img_y[1], img_x[0] : img_x[1]] += g[g_y[0] : g_y[1], g_x[0] : g_x[1]]
-    depth_map = 1.0/ (1.0 + depth_map) #normalise and invert so that closer points have higher values
+    # DepthAnythingV2 already returns *relative inverse depth* (closer pixels
+    # have a higher value).  The previous `1/(1+depth_map)` re-inverted that
+    # convention, so depth_diff below was being computed in the wrong space
+    # and depth_weight was biased.  Fix: per-image min-max-normalise to
+    # [0, 1] so closer ≈ 1 and farther ≈ 0, then sample gaze_depth in the
+    # same normalised space.
+    d_min, d_max = depth_map.min(), depth_map.max()
+    depth_map = (depth_map - d_min) / ((d_max - d_min) + 1e-6)
     gaussian = img.clone()
-    
-    
+
+
     gaze_depth = depth_map[
         min(gazey, depth_map.shape[0] - 1),
         min(gazex, depth_map.shape[1] - 1)
     ]
 
-    depth_diff = (depth_map - gaze_depth) / (depth_map.max() + 1e-6) #differnce between depth and gaze depth, and normalised
+    # depth_map is in [0, 1] after min-max, so dividing by its max (≈1) is a
+    # near-no-op; kept for numerical safety.
+    depth_diff = (depth_map - gaze_depth) / (depth_map.max() + 1e-6)
     depth_weight = torch.exp(-(depth_diff ** 2) / (2 * depth_decay ** 2)) #convert depth difference to weight - similar depth points to gaze point have higher weight
 
     #Add depth to the area of the gaussian blur

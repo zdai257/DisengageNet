@@ -1,6 +1,6 @@
 # General Configuration
 model:
-  name: "gazemoe_dinov2_vitl14_inout"  # gt3d_dinov2_vit{b14,l14}{,_inout}
+  name: "gt3d_dinov2_vitl14_inout"  # gt3d_dinov2_vit{b14,l14}{,_inout}
   pretrained_path: ""  #"pretrainShared_epoch_14.pt" or "gazelle_dinov2_vitl14_inout.pt" or "pretrainMoE_MSF1_best.pt"
   mlp_ratio: 1  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size [1, 2, 4]
   num_experts: 4  # Routed experts [3, 4, 6]
@@ -34,6 +34,41 @@ model:
   num_refine_layers: 2
   dense_depth_dim: 32     # only used when refine_cond == "dense"
 
+  # --- GT3D depth-aware extension (train_gazefollow-depthaware.py) ---
+  # Architecture toggles (consumed by network/network_builder_gt3d.py).
+  use_anchored_depth: True       # 2 query tokens + shared scalar MLP → (z_gaze, z_head)
+  use_dense_depth:    True       # small ConvT→1×1 decoder → [B,64,64] dense depth
+
+  # --- Multi-task curriculum (train_gazefollow-depthaware.py) ---
+  # Phase windows (0-based epoch indices):
+  #   warmup           : [0, warmup_epochs)
+  #   depth_warmup     : [warmup_epochs, ray_start_epoch)
+  #   full             : [ray_start_epoch, total - annealing_last_epochs)
+  #   annealing        : [total - annealing_last_epochs, total)
+  curriculum_warmup_epochs:         1
+  ray_start_epoch:                  5
+  curriculum_annealing_last_epochs: 2
+  # Detach depth heads from trunk for the first N epochs (gradient firewall).
+  detach_depth_grads_to_trunk_for_epochs: 2
+
+  # --- Auxiliary loss weights (linearly ramped *_start → *_end across the
+  # 'full' phase; fixed at *_end during 'annealing'; 0 during 'warmup'). ---
+  w_d_dense_start:  0.30           # dense DA2 distillation
+  w_d_dense_end:    0.10
+  w_ratio_start:    0.50           # anchored log-ratio
+  w_ratio_end:      0.20
+  w_ray3d_start:    0.05           # 3-D ray-tracing (enabled at ray_start_epoch)
+  w_ray3d_end:      0.20
+  w_consist:        0.0            # optional dense<->anchored consistency (OFF when ≤0)
+
+  # --- L_d_dense shape ---
+  dense_alpha_gaussian: 0.5        # α · weighted_SI-log + (1-α) · global_SI-log
+
+  # --- L_ray3d shape ---
+  ray_gamma: 0.5                   # Z-axis rebalance vs. (x, y) in the 3-D ray
+  ray_w_cos: 1.0                   # weight on (1 - cos angle)
+  ray_w_l1:  0.5                   # weight on per-axis L1
+
 data:
   input_resolution: 448
   train_path: "./VAT"     # Path to preprocessed training dataset
@@ -42,6 +77,7 @@ data:
   pre_test_path: "./gazefollow_extended"
   goo_path: "../GOOSynthV3"
   goo_real_path: ""   # dir containing gooreal_test_preprocess.json; set "../GOORealV3" OR "" to disable
+  depth_dir: "depth"  # sub-folder under {train,test,goo,...}_path holding cached DA2 .npy maps
   # [["crop"], ["crop", "photometric"], ["crop", "rotation"], ["crop", "photometric", "rotation"]]
   augmentations: ["crop", "photometric"]
 
@@ -52,7 +88,7 @@ train:
   # 0.00001 for VAt; 0.0001 for ChildPlay 
   lr: 0.001                         # heatmap_head, refined_heatmap_head, pos_embed
   inout_lr: 0.001
-  depth_lr: 0.001
+  depth_lr: 0.0003                  # GT3D: ≈ lr/3 to taper depth pressure on the shared trunk
   fuse_lr: 0.001
   block_lr: 0.001
   layer_decay: 0                    # 0 or 1
@@ -90,8 +126,8 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/gazemoe_depthaware/"           # auto naming
-  pre_dir: "results/pretrain_gazemoe_depthaware/"
+  log_dir: "results/gt3d/"           # auto naming
+  pre_dir: "results/pretrain_gt3d/"
   save_every: 5
 
 hardware:
