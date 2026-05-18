@@ -444,6 +444,132 @@ def gaze_ray_3d_loss(pred_heatmap, pred_z_gaze, pred_z_head,
     return per_smp.mean()
 
 
+def gaze3d_aux_loss(
+    pred_heatmap,         # [B, H, W]  sigmoid heatmap
+    gt_gazex, gt_gazey,   # [B]        normalised in [0, 1]
+    head_cx,  head_cy,    # [B]        normalised in [0, 1]
+    depth_norm,           # [B, H_d, W_d]  per-image min-max DA2 in [0, 1]
+    mask=None,            # [B] bool   exclude out-of-frame samples
+    depth_weight=1.0,     # internal balance of depth-coherence vs 2-D angular
+    temperature=None,     # None → use raw sigmoid heatmap as probability;
+                          # float → softmax temperature on the heatmap
+    eps=1e-8,
+):
+    """One composite auxiliary loss for depth-aware gaze-target training.
+
+    Operates in normalised ``(x, y, z) ∈ [0, 1]³`` space (image height,
+    image width, per-image min-max-normalised DepthAnythingV2 depth).  No
+    model depth head is required — depth is *sampled from the GT DA2 map*
+    at the heatmap's expected ``(x, y)`` and at the GT gaze pixel, so the
+    model still outputs only the heatmap at inference.
+
+    The loss decomposes into two scale-invariant components on independent
+    axes — it is **not** a rigid 3-D angle (the relative scale of (x, y)
+    vs. z is unknown when only relative DA2 depth is available):
+
+        L = (1 − cos((pred_xy − head_c), (gt_xy − head_c)))    ←  2-D angular
+          + depth_weight · |d_pred − d_gt|                     ←  depth-coherence
+
+    where::
+
+        prob_ij   = pred_heatmap_ij  /  Σ pred_heatmap          (or softmax with T)
+        pred_x    = Σ x_j · prob_ij                              (expected x  ∈ [0, 1])
+        pred_y    = Σ y_i · prob_ij                              (expected y  ∈ [0, 1])
+        d_pred    = Σ depth_norm_ij · prob_ij                    (expected z  ∈ [0, 1])
+        d_gt      = bilinear_sample(depth_norm, (gt_gazex, gt_gazey))
+
+    Properties:
+        • Single composite term — one external weight ``w_aux_3d``.
+        • Each component is scale-invariant (cosine on (x, y), bounded
+          |Δd| in [0, 1] under per-image min-max of DA2).
+        • Operates in normalised 3-D space — but is *not* the rigid
+          physical 3-D angle.
+        • Bounded ≈ [0, 3]; small magnitude so it won't perturb the BCE
+          heatmap loss when used with a small external weight (≈ 0.1).
+        • Gradient flow: heatmap → (pred_x, pred_y, d_pred) by direct
+          expectation under the heatmap probability ⇒ direct gradient
+          into the heatmap head.  No depth head, no soft-argmax
+          temperature in the default path.
+
+    Args:
+        pred_heatmap : [B, H, W] sigmoid heatmap.  Used as a probability
+                       map after L1 normalisation (or softmax if
+                       ``temperature`` is given).
+        gt_gazex/y   : [B] tensors in [0, 1] — the (single annotator)
+                       GT gaze pixel.
+        head_cx/cy   : [B] tensors in [0, 1] — head bbox centre.
+        depth_norm   : [B, H_d, W_d] per-image min-max-normalised DA2 in
+                       [0, 1].  Interpolated to (H, W) if needed.
+        mask         : optional [B] bool to exclude undefined samples
+                       (e.g. out-of-frame ``inout == 0``).
+        depth_weight : internal weight of |d_pred − d_gt| relative to the
+                       2-D angular term.  Default 1.0 puts them on equal
+                       footing (their dynamic ranges are already similar:
+                       l_2d_ang ∈ [0, 2], l_depth ∈ [0, 1]).
+        temperature  : None to use the sigmoid heatmap directly as a
+                       probability map (smooth, faithful to the BCE
+                       supervision).  Pass a float (e.g. 0.05) for a
+                       sharper softmax-based attention.
+
+    Returns:
+        Scalar tensor — mean over (masked) batch.
+    """
+    B, H, W = pred_heatmap.shape
+
+    # Match depth_norm spatial resolution to heatmap so the per-pixel
+    # expectation against the heatmap probability is well-defined.
+    if depth_norm.dim() == 4:
+        depth_norm = depth_norm.squeeze(1)
+    if depth_norm.shape[-2] != H or depth_norm.shape[-1] != W:
+        depth_norm = F.interpolate(
+            depth_norm.unsqueeze(1), size=(H, W),
+            mode='bilinear', align_corners=True,
+        ).squeeze(1)
+
+    # Heatmap → probability distribution.
+    if temperature is None:
+        # Faithful to the BCE supervision (no extra temperature knob).
+        prob = pred_heatmap / (
+            pred_heatmap.flatten(1).sum(dim=1)
+            .view(B, 1, 1).clamp(min=eps)
+        )
+    else:
+        flat = pred_heatmap.view(B, -1)
+        prob = F.softmax(flat / float(temperature), dim=-1).view(B, H, W)
+
+    # Expected (x, y, z) under the heatmap probability.
+    xr = torch.linspace(0, 1, W, device=pred_heatmap.device).view(1, 1, W).expand(B, H, W)
+    yr = torch.linspace(0, 1, H, device=pred_heatmap.device).view(1, H, 1).expand(B, H, W)
+    pred_x = (xr * prob).sum(dim=(1, 2))                    # [B]
+    pred_y = (yr * prob).sum(dim=(1, 2))                    # [B]
+    d_pred = (depth_norm * prob).sum(dim=(1, 2))            # [B]
+
+    # GT depth at the GT gaze pixel (bilinear interp for sub-pixel accuracy).
+    grid = torch.stack(
+        [2.0 * gt_gazex - 1.0, 2.0 * gt_gazey - 1.0], dim=-1
+    ).view(B, 1, 1, 2)
+    d_gt = F.grid_sample(
+        depth_norm.unsqueeze(1), grid,
+        mode='bilinear', align_corners=True,
+    ).view(B)
+
+    # ---- 2-D angular: cosine between head→target rays in image plane ----
+    pred_xy_vec = torch.stack([pred_x   - head_cx, pred_y   - head_cy], dim=-1)
+    gt_xy_vec   = torch.stack([gt_gazex - head_cx, gt_gazey - head_cy], dim=-1)
+    cos_2d   = F.cosine_similarity(pred_xy_vec, gt_xy_vec, dim=-1, eps=eps)  # [B]
+    l_2d_ang = 1.0 - cos_2d                                                  # [B]
+
+    # ---- Depth-coherence ----
+    l_depth = (d_pred - d_gt).abs()                                          # [B]
+
+    per_sample = l_2d_ang + float(depth_weight) * l_depth                    # [B]
+
+    if mask is not None:
+        m = mask.to(per_sample.device).float()
+        return (per_sample * m).sum() / m.sum().clamp(min=1.0)
+    return per_sample.mean()
+
+
 def anchored_consistency_loss(pred_dense, pred_z_gaze, pred_z_head,
                               gazex_norm, gazey_norm,
                               head_cx_norm, head_cy_norm):

@@ -1,6 +1,6 @@
 # General Configuration
 model:
-  name: "gt3d_dinov2_vitl14_inout"  # gt3d_dinov2_vit{b14,l14}{,_inout}
+  name: "gazemoe_dinov2_vitl14_inout"  # gazemoe_dinov2_vit{b14,l14}{,_inout} | gt3d_dinov2_vit{b14,l14}{,_inout}
   pretrained_path: ""  #"pretrainShared_epoch_14.pt" or "gazelle_dinov2_vitl14_inout.pt" or "pretrainMoE_MSF1_best.pt"
   mlp_ratio: 1  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size [1, 2, 4]
   num_experts: 4  # Routed experts [3, 4, 6]
@@ -34,40 +34,27 @@ model:
   num_refine_layers: 2
   dense_depth_dim: 32     # only used when refine_cond == "dense"
 
-  # --- GT3D depth-aware extension (train_gazefollow-depthaware.py) ---
-  # Architecture toggles (consumed by network/network_builder_gt3d.py).
-  use_anchored_depth: True       # 2 query tokens + shared scalar MLP → (z_gaze, z_head)
-  use_dense_depth:    True       # small ConvT→1×1 decoder → [B,64,64] dense depth
+  # --- Depth-aware GazeFollow pretraining (train_gazefollow-depthaware.py) ---
+  # The depth-aware trainer uses *plain GazeMoE* (no depth heads at all)
+  # plus ONE composite auxiliary loss:
+  #     L_aux = (1 − cos((pred_xy − head_c), (gt_xy − head_c)))     ← 2-D angular
+  #           + aux_3d_depth_weight · |d_pred − d_gt|               ← depth-coherence
+  # where (pred_xy, d_pred) are expectations under the heatmap probability
+  # and d_pred / d_gt are bilinearly sampled from the GT DA2 depth map.
+  # Scale-invariant in normalised (x, y, depth) ∈ [0, 1]³; NOT a rigid 3-D
+  # angle.  No depth prediction; the model outputs only the heatmap at
+  # inference and no .npy is needed at deploy time.
+  w_aux_3d:             0.1   # overall weight on L_aux (small ⇒ BCE dominates)
+  aux_3d_warmup_epochs: 1     # linear warmup of w_aux from 0 over the first N epochs
+  aux_3d_depth_weight:  1.0   # internal balance of depth-coherence vs 2-D angular
+  aux_3d_temperature: null    # null → use sigmoid heatmap as probability;
+                              # set a float (e.g. 0.05) for a sharper softmax attention
 
-  # --- Multi-task curriculum (train_gazefollow-depthaware.py) ---
-  # Phase windows (0-based epoch indices):
-  #   warmup           : [0, warmup_epochs)
-  #   depth_warmup     : [warmup_epochs, ray_start_epoch)
-  #   full             : [ray_start_epoch, total - annealing_last_epochs)
-  #   annealing        : [total - annealing_last_epochs, total)
-  curriculum_warmup_epochs:         1
-  ray_start_epoch:                  5
-  curriculum_annealing_last_epochs: 2
-  # Detach depth heads from trunk for the first N epochs (gradient firewall).
-  detach_depth_grads_to_trunk_for_epochs: 2
-
-  # --- Auxiliary loss weights (linearly ramped *_start → *_end across the
-  # 'full' phase; fixed at *_end during 'annealing'; 0 during 'warmup'). ---
-  w_d_dense_start:  0.30           # dense DA2 distillation
-  w_d_dense_end:    0.10
-  w_ratio_start:    0.50           # anchored log-ratio
-  w_ratio_end:      0.20
-  w_ray3d_start:    0.05           # 3-D ray-tracing (enabled at ray_start_epoch)
-  w_ray3d_end:      0.20
-  w_consist:        0.0            # optional dense<->anchored consistency (OFF when ≤0)
-
-  # --- L_d_dense shape ---
-  dense_alpha_gaussian: 0.5        # α · weighted_SI-log + (1-α) · global_SI-log
-
-  # --- L_ray3d shape ---
-  ray_gamma: 0.5                   # Z-axis rebalance vs. (x, y) in the 3-D ray
-  ray_w_cos: 1.0                   # weight on (1 - cos angle)
-  ray_w_l1:  0.5                   # weight on per-axis L1
+  # --- GT3D heads (consumed only by train_depth_goo.py / train_depth_gazefollow.py) ---
+  # These toggles are unused by the simplified depth-aware GazeFollow trainer
+  # above; left here so other depth-aware scripts can still find them.
+  use_anchored_depth: True
+  use_dense_depth:    True
 
 data:
   input_resolution: 448
@@ -126,8 +113,8 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/gt3d/"           # auto naming
-  pre_dir: "results/pretrain_gt3d/"
+  log_dir: "results/gazemoe_depthaux/"                        # auto naming for GT3D finetune
+  pre_dir: "results/pretrain_gazemoe_depthaux/"   # depth-aware GazeFollow pretrain
   save_every: 5
 
 hardware:

@@ -1,45 +1,40 @@
 """
-train_gazefollow-depthaware.py — depth-aware GazeFollow pretraining.
+train_gazefollow-depthaware.py — depth-aware GazeFollow pretraining
+(simplified: GazeMoE + ONE composite auxiliary loss).
 
-Replaces the original simple ``get_depthaware_heatmap``-only pipeline with
-a multi-task GT3D pipeline that exploits DepthAnythingV2 pseudo-labels at
-*training time only* (model inference does not need any .npy depth file).
+Design
+------
+The previous multi-task GT3D pipeline (3 separate depth losses + depth-
+prediction heads + curriculum) was too busy and perturbed the dominant
+BCE heatmap loss, falling shy of the GazeMoE SoTA on AUC / AvgL2.
 
-Loss
-----
-    L = L_hm                          (BCE on depth-aware Gaussian heatmap)
-      + w_d_dense   · L_d_dense       (SI-log on dense DA2 pseudo-label)
-      + w_ratio     · L_ratio         (anchored log-ratio of z_gaze, z_head)
-      + w_ray3d     · L_ray3d         (3-D head→target ray-tracing loss)
-      + w_consist   · L_consist       (optional; OFF unless w_consist > 0)
-      + w_inout     · L_inout         (optional inout head)
+This version returns to the proven GazeMoE 2-D architecture (no depth
+heads at all — model is unchanged from the SoTA baseline) and adds a
+single, well-scoped auxiliary loss that uses DepthAnythingV2 pseudo-
+labels *only at training time*:
 
-The 2-D heatmap target itself is still produced by
-``utils.get_depthaware_heatmap`` (per-user request — its double-inversion
-bug is now fixed in network/utils.py).  All depth-related auxiliary
-supervision is *additional* to that target.
+    L = SCALAR · BCE(pred_heatmap, depth_aware_heatmap_target)
+      + w_aux_3d · gaze3d_aux_loss(...)
 
-Curriculum (0-based epoch indices)
-----------------------------------
-    epoch  0 .. warmup-1                : L_hm only
-                                          detach_depth_grads = True
-    epoch  warmup .. ray_start-1        : L_hm + 0.5·L_d_dense + 0.5·L_ratio
-                                          detach_depth_grads = True for the
-                                          first ``detach_depth_grads_to_trunk_for_epochs``
-                                          epochs total
-    epoch  ray_start .. N-(anneal+1)    : all losses, weights linearly ramped
-                                          from *_start → *_end
-                                          detach_depth_grads = False
-    epoch  N-anneal .. N-1              : all losses pinned at *_end weights
-                                          (annealing tail)
+``gaze3d_aux_loss`` (defined in train_depth_goo.py) is a composite of two
+scale-invariant components in normalised (x, y, depth) ∈ [0, 1]³:
 
-Evaluation
-----------
-    Primary 2-D metrics  : AUC, AvgL2, MinL2 (existing gazefollow_* helpers).
-    Secondary 3-D metrics: RatioMAE, RatioRMSE, δ1, L2-3D, Angle-3D
-                           (computed from the model's depth scalar outputs
-                            against DA2 GT sampled at the mean annotator
-                            location and the head bbox centre).
+    L_aux = 1 − cos((pred_xy − head_c), (gt_xy − head_c))     ← 2-D angular
+          + depth_weight · |d_pred − d_gt|                     ← depth-coherence
+
+where both ``pred_xy`` and ``d_pred`` are expectations under the heatmap
+probability (no soft-argmax temperature, no depth head); ``d_gt`` is
+bilinearly sampled from the GT DA2 map at the GT gaze pixel.  The model
+remains bit-identical to GazeMoE — depth is purely supervisory.
+
+The depth-aware heatmap *target* itself (``utils.get_depthaware_heatmap``)
+is preserved per the user's earlier decision — its double-inversion bug is
+fixed in network/utils.py.
+
+Inference contract
+------------------
+The model is plain GazeMoE — at inference it consumes only the image and
+head bbox.  No .npy depth file is needed at deploy time.
 """
 
 import copy
@@ -61,37 +56,20 @@ import wandb
 import yaml
 
 from eval import gazefollow_auc, gazefollow_l2
-from network.network_builder_gt3d import get_gt3d_model
+from network.network_builder import get_gazelle_model
+from network.network_builder_update2 import get_gazemoe_model
 import network.utils as utils
 from network.utils import get_depthaware_heatmap
 
-# Centralised loss / metric helpers — train_depth_goo.py is the depth-aware
-# loss hub.  train_depth_gazefollow.py uses the same pattern.
-from train_depth_goo import (
-    LOSS_SCALAR,
-    FocalLoss,
-    # Anchored / SI-log losses on (z_gaze, z_head).
-    anchored_log_huber_loss,
-    anchored_si_log_loss,
-    # 3-D metrics.
-    anchored_delta1,
-    anchored_l2_3d,
-    gaze3d_angle_relative,
-    ratio_mae,
-    ratio_rmse,
-    # New helpers added in this iteration.
-    anchored_consistency_loss,
-    dense_si_log_loss,
-    gaze_ray_3d_loss,
-)
+from train_depth_goo import gaze3d_aux_loss
 
 
 # --------------------------------------------------------------------------
-# Joint augmentations (RGB + depth must move together).
+# Joint augmentations (RGB + depth must move together) — depth map is a
+# training-only signal, so we keep it aligned through crop/flip/jitter.
 # --------------------------------------------------------------------------
 
 def _joint_random_crop(image, depth, bbox, gazex, gazey, inout):
-    """utils.random_crop, but cropping the depth map identically."""
     width, height = image.size
     bxmin, bymin, bxmax, bymax = bbox
     cxmin = min(bxmin, min(gazex)) if inout else bxmin
@@ -129,33 +107,28 @@ def _joint_horiz_flip(image, depth, bbox, gazex, gazey, inout):
 # --------------------------------------------------------------------------
 
 class GazeDepthDataset(torch.utils.data.Dataset):
-    """GazeFollow with depth-aware heatmap target + dense / anchored depth GT.
+    """GazeFollow with depth-aware heatmap target + per-image min-max DA2
+    depth map (training-only auxiliary signal).
 
-    Train items
-    -----------
+    Train items::
+
         image_t        : [3, H, W]
         bbox_norm      : [4]   in [0, 1]
         gazex_norm     : list  in [0, 1]
         gazey_norm     : list  in [0, 1]
         inout          : 0-D tensor
         height, width  : int (original image size, post-aug)
-        heatmap_da     : [64, 64] Gaussian × depth weighting
-                         (utils.get_depthaware_heatmap, after the
-                          double-inversion fix in network/utils.py)
-        dense_depth_t  : [64, 64] per-image min-max-normalised DA2 map in [0,1]
-        gt_z_gaze      : float  in [0, 1]   (DA2 value at gaze pixel)
-        gt_z_head      : float  in [0, 1]   (DA2 value at head bbox centre)
+        heatmap_da     : [64, 64] depth-aware Gaussian
+                         (utils.get_depthaware_heatmap, double-inversion-fixed)
+        depth_64       : [64, 64] per-image min-max-normalised DA2 in [0, 1]
 
-    Test items
-    ----------
-        Same as train minus the heatmap (eval uses GT annotations directly).
-        Depth is still loaded at test time *only to compute 3-D metrics*;
-        the model itself never consumes a depth tensor at inference.
+    Test items: same minus the heatmap target; depth is still emitted so the
+    eval pipeline can compute 3-D-proxy metrics by sampling GT depth at the
+    argmax of the predicted heatmap (the model itself never consumes it).
     """
 
     def __init__(self, dataset_name, path, split, transform,
-                 in_frame_only=True, sample_rate=1, aug_groups=None,
-                 depth_dir='depth'):
+                 in_frame_only=True, aug_groups=None, depth_dir='depth'):
         self.dataset_name = dataset_name
         self.path = path
         self.depth_dir = depth_dir
@@ -164,7 +137,6 @@ class GazeDepthDataset(torch.utils.data.Dataset):
         self.aug = self.is_train
         self.transform = transform
         self.in_frame_only = in_frame_only
-        self.sample_rate = sample_rate
         self.aug_groups = aug_groups if aug_groups is not None else []
 
         if dataset_name == "gazefollow":
@@ -185,7 +157,7 @@ class GazeDepthDataset(torch.utils.data.Dataset):
         """Map ``train/0001/0001.jpg`` → ``depth/train/0001/0001.npy``."""
         rel = image_rel_path.replace("images" + os.sep,
                                      self.depth_dir + os.sep, 1)
-        if rel == image_rel_path:                     # no "images/" segment
+        if rel == image_rel_path:
             rel = os.path.join(self.depth_dir, image_rel_path)
         rel = os.path.splitext(rel)[0] + ".npy"
         return os.path.join(self.path, rel)
@@ -195,20 +167,6 @@ class GazeDepthDataset(torch.utils.data.Dataset):
 
     def _load_depth_pil(self, image_rel_path):
         return Image.fromarray(self._load_depth_npy(image_rel_path), mode="F")
-
-    @staticmethod
-    def _sample_anchored_from_64(d_norm_64, gazex_norm, gazey_norm, bbox_norm):
-        """Sample (gt_z_gaze, gt_z_head) from a [64,64] min-max-normalised array."""
-        u_g = int(np.clip(round(gazex_norm * 63), 0, 63))
-        v_g = int(np.clip(round(gazey_norm * 63), 0, 63))
-        gt_z_gaze = float(d_norm_64[v_g, u_g])
-
-        hcx = (bbox_norm[0] + bbox_norm[2]) * 0.5
-        hcy = (bbox_norm[1] + bbox_norm[3]) * 0.5
-        u_h = int(np.clip(round(hcx * 63), 0, 63))
-        v_h = int(np.clip(round(hcy * 63), 0, 63))
-        gt_z_head = float(d_norm_64[v_h, u_h])
-        return gt_z_gaze, gt_z_head
 
     # ----------------------------------------------------------------------
     def __getitem__(self, idx):
@@ -222,7 +180,7 @@ class GazeDepthDataset(torch.utils.data.Dataset):
 
         img_path = os.path.join(self.path, img_data['path'])
         img = Image.open(img_path).convert("RGB")
-        depth_pil = self._load_depth_pil(img_data['path'])   # for joint aug
+        depth_pil = self._load_depth_pil(img_data['path'])
         width, height = img.size
 
         if self.aug:
@@ -262,34 +220,21 @@ class GazeDepthDataset(torch.utils.data.Dataset):
                               dtype=np.float32)
         d_min, d_max = float(d_arr_64.min()), float(d_arr_64.max())
         d_norm_64 = (d_arr_64 - d_min) / ((d_max - d_min) + 1e-8)
-
-        # Anchored GT scalars: train uses the single annotation; test uses
-        # the mean annotator location (one stable reference per image).
-        if self.is_train:
-            gx_for_depth = gazex_norm[0]
-            gy_for_depth = gazey_norm[0]
-        else:
-            gx_for_depth = float(np.mean(gazex_norm))
-            gy_for_depth = float(np.mean(gazey_norm))
-        gt_z_gaze, gt_z_head = self._sample_anchored_from_64(
-            d_norm_64, gx_for_depth, gy_for_depth, bbox_norm)
+        depth_64_t = torch.from_numpy(d_norm_64).float()         # [64, 64]
 
         if self.is_train:
-            # Keep the depth-aware heatmap target as the user wants.
-            # get_depthaware_heatmap accepts arbitrary-resolution depth and
-            # resizes internally; pass the post-augmentation depth so the
-            # target is consistent with the augmented gaze coordinates.
+            # Keep the depth-aware heatmap target as the user wants.  Use the
+            # post-augmentation depth so the target is consistent with the
+            # augmented gaze coordinates.
             depth_full = np.asarray(depth_pil, dtype=np.float32)
             heatmap = get_depthaware_heatmap(
                 depth_full, gazex_norm[0], gazey_norm[0], 64, 64)
-            dense_depth_t = torch.from_numpy(d_norm_64).float()  # [64, 64]
             return (img_t, bbox_norm, gazex_norm, gazey_norm,
                     torch.tensor(inout), height, width,
-                    heatmap, dense_depth_t,
-                    float(gt_z_gaze), float(gt_z_head))
+                    heatmap, depth_64_t)
         return (img_t, bbox_norm, gazex_norm, gazey_norm,
                 torch.tensor(inout), height, width,
-                float(gt_z_gaze), float(gt_z_head))
+                depth_64_t)
 
     def __len__(self):
         return len(self.data_idxs)
@@ -304,48 +249,63 @@ def collate_fn(batch):
 
 
 # --------------------------------------------------------------------------
-# Curriculum helper — compute per-epoch loss weights and the
-# detach_depth_grads toggle.
+# 3-D-proxy eval metrics (no depth prediction needed — use GT-sampled depth).
 # --------------------------------------------------------------------------
 
-def _curriculum_weights(epoch, *, total_epochs, warmup_epochs, ray_start_epoch,
-                        annealing_last_epochs, detach_until_epoch,
-                        w_d_dense_start, w_d_dense_end,
-                        w_ratio_start,   w_ratio_end,
-                        w_ray3d_start,   w_ray3d_end):
-    """Return (w_d_dense, w_ratio, w_ray3d, detach_grads, phase_name)."""
-    in_warmup    = epoch < warmup_epochs
-    in_depth_wu  = (warmup_epochs <= epoch < ray_start_epoch)
-    annealing_start = total_epochs - annealing_last_epochs
-    in_annealing = epoch >= annealing_start
-    in_full      = (ray_start_epoch <= epoch < annealing_start)
+def _sample_depth_at(depth_64, x_norm, y_norm):
+    """Nearest-pixel sample of a [64, 64] depth map at normalised (x, y)."""
+    H, W = depth_64.shape
+    x = int(np.clip(round(float(x_norm) * (W - 1)), 0, W - 1))
+    y = int(np.clip(round(float(y_norm) * (H - 1)), 0, H - 1))
+    return float(depth_64[y, x])
 
-    if in_warmup:
-        wd, wr, wr3 = 0.0, 0.0, 0.0
-        phase = "warmup"
-    elif in_depth_wu:
-        wd  = 0.5 * w_d_dense_start
-        wr  = 0.5 * w_ratio_start
-        wr3 = 0.0
-        phase = "depth_warmup"
-    elif in_full:
-        denom = max(annealing_start - ray_start_epoch - 1, 1)
-        t = (epoch - ray_start_epoch) / float(denom)
-        t = max(0.0, min(1.0, t))
-        wd  = w_d_dense_start + (w_d_dense_end - w_d_dense_start) * t
-        wr  = w_ratio_start   + (w_ratio_end   - w_ratio_start)   * t
-        wr3 = w_ray3d_start   + (w_ray3d_end   - w_ray3d_start)   * t
-        phase = "full"
-    else:  # in_annealing
-        wd, wr, wr3 = w_d_dense_end, w_ratio_end, w_ray3d_end
-        phase = "annealing"
 
-    detach = epoch < detach_until_epoch
-    return wd, wr, wr3, detach, phase
+def l2_3d_proxy(heatmap, gazex, gazey, depth_64):
+    """L2 distance in normalised (x, y, z) ∈ [0, 1]³ between the heatmap's
+    argmax pixel and the (mean annotator) GT pixel.  Depth at both points
+    is sampled from the same per-image min-max-normalised DA2 map, so the
+    metric is scale-invariant and meaningful without any depth prediction.
+    """
+    argmax = int(heatmap.flatten().argmax().item())
+    pred_y, pred_x = np.unravel_index(argmax, heatmap.shape)
+    pred_x = pred_x / float(heatmap.shape[1])
+    pred_y = pred_y / float(heatmap.shape[0])
+    gt_x = float(np.mean(gazex))
+    gt_y = float(np.mean(gazey))
+    d_pred = _sample_depth_at(depth_64, pred_x, pred_y)
+    d_gt   = _sample_depth_at(depth_64, gt_x,   gt_y)
+    return float(np.sqrt(
+        (pred_x - gt_x) ** 2 + (pred_y - gt_y) ** 2 + (d_pred - d_gt) ** 2
+    ))
+
+
+def angle_3d_proxy(heatmap, gazex, gazey, head_cx, head_cy, depth_64):
+    """Angular error of the head→target ray in normalised (x, y, z) space.
+    Depths are sampled from the GT DA2 map at the head, predicted argmax,
+    and GT gaze.  Reported in degrees.  Not a physical 3-D angle.
+    """
+    argmax = int(heatmap.flatten().argmax().item())
+    pred_y, pred_x = np.unravel_index(argmax, heatmap.shape)
+    pred_x = pred_x / float(heatmap.shape[1])
+    pred_y = pred_y / float(heatmap.shape[0])
+    gt_x = float(np.mean(gazex))
+    gt_y = float(np.mean(gazey))
+    d_head = _sample_depth_at(depth_64, head_cx, head_cy)
+    d_pred = _sample_depth_at(depth_64, pred_x,  pred_y)
+    d_gt   = _sample_depth_at(depth_64, gt_x,    gt_y)
+    pv = np.array([pred_x - head_cx, pred_y - head_cy, d_pred - d_head],
+                  dtype=np.float64)
+    gv = np.array([gt_x   - head_cx, gt_y   - head_cy, d_gt   - d_head],
+                  dtype=np.float64)
+    pn = float(np.linalg.norm(pv)) + 1e-8
+    gn = float(np.linalg.norm(gv)) + 1e-8
+    cos = float(np.dot(pv, gv) / (pn * gn))
+    cos = max(-1.0, min(1.0, cos))
+    return float(np.degrees(np.arccos(cos)))
 
 
 # --------------------------------------------------------------------------
-# Scheduler helper (warmup + cosine, identical to train_depth_gazefollow.py)
+# Scheduler helper (warmup + cosine).
 # --------------------------------------------------------------------------
 
 def _make_warmup_cosine_lambda(total_ep, warmup_ep, eta, ref_lr):
@@ -375,11 +335,10 @@ def main():
 
     wandb.init(
         project=cfg_m['name'],
-        name="pretrain_gf_depth",
+        name="pretrain_gf_depth_aux",
         config=config,
     )
 
-    # ---- Checkpoint dir -------------------------------------------------
     checkpoint_dir = "_".join([
         cfg_m['name'],
         cfg_m.get('moe_type', 'vanilla'),
@@ -388,21 +347,17 @@ def main():
         "bs" + str(cfg_t['pre_batch_size']),
         cfg_m['pbce_loss'],
         str(cfg_t['pre_lr']),
-        str(cfg_t['pre_fuse_lr']),
-        str(cfg_t['pre_block_lr']),
-        "depth",
+        "aux" + str(cfg_m.get('w_aux_3d', 0.1)),
     ])
     exp_dir = os.path.join(config['logging']['pre_dir'], checkpoint_dir)
     os.makedirs(exp_dir, exist_ok=True)
     print(f"Pretrained checkpoint saved at: {exp_dir}")
 
-    # ---- Model ----------------------------------------------------------
-    model, transform = get_gt3d_model(config)
-    print(f"Model: {cfg_m['name']}  "
-          f"(anchored_depth={getattr(model, 'use_anchored_depth', True)}, "
-          f"dense_depth={getattr(model, 'use_dense_depth', True)})")
+    # ---- Model — plain GazeMoE (no depth heads, no curriculum) ---------
+    model, transform = get_gazemoe_model(config)
+    print(f"Model: {cfg_m['name']} (plain GazeMoE; depth used only as aux loss)")
 
-    # Freeze backbone (same convention as the legacy GazeFollow pretrain).
+    # Freeze backbone (same as the original GazeFollow pretrain convention).
     for param in model.backbone.parameters():
         param.requires_grad = False
     print(f"Learnable parameters: "
@@ -436,25 +391,24 @@ def main():
         pin_memory=config['hardware'].get('pin_memory', False),
     )
 
-    # ---- Per-bucket LR dispatch ----------------------------------------
+    # ---- Per-bucket LR dispatch (GazeMoE convention) -------------------
+    # The new aux loss introduces no new params — the original 3-bucket
+    # dispatch (fuse / block / default) suffices.  We still respect any
+    # inout_lr / depth_lr keys in case the same config is reused by other
+    # depth-aware scripts (those substrings won't match any GazeMoE param
+    # in this trainer, so depth_lr is effectively unused here).
     pre_lr       = float(cfg_t['pre_lr'])
     pre_fuse_lr  = float(cfg_t.get('pre_fuse_lr',  pre_lr))
     pre_block_lr = float(cfg_t.get('pre_block_lr', pre_lr))
-    pre_inout_lr = float(cfg_t.get('inout_lr',     pre_lr))
-    pre_depth_lr = float(cfg_t.get('depth_lr',     pre_lr))
 
     param_dicts = []
     for n, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        if "inout" in n:
-            lr = pre_inout_lr
-        elif "depth" in n:
-            lr = pre_depth_lr
-        elif "block" in n:
-            lr = pre_block_lr
-        elif ("fuse" in n) or ("fusion" in n) or ("linear" in n):
+        if ('ms_fusion' in n) or ('fuse' in n) or ('fusion' in n) or ('linear' in n):
             lr = pre_fuse_lr
+        elif ('transformer' in n) or ('block' in n):
+            lr = pre_block_lr
         else:
             lr = pre_lr
         param_dicts.append({'params': p, 'lr': lr})
@@ -495,7 +449,6 @@ def main():
         )
 
     # ---- Loss configuration --------------------------------------------
-    # Heatmap loss: BCE / MSE selectable.
     if cfg_m['pbce_loss'] == "mse":
         SCALAR = 36
         heatmap_loss_fn = nn.MSELoss(reduction=cfg_m.get('reduction', 'mean'))
@@ -507,119 +460,60 @@ def main():
             f"Heatmap loss not supported: {cfg_m['pbce_loss']!r}  "
             f"(expected 'mse' or 'bce')")
 
-    inout_loss_fn = (FocalLoss() if int(cfg_m.get('is_focal_loss', 0)) == 1
-                     else nn.BCELoss())
+    # ---- Single auxiliary-loss schedule --------------------------------
+    # Simple linear warmup of the aux weight from 0 over the first
+    # ``aux_3d_warmup_epochs`` epochs (so the BCE heatmap converges first),
+    # then constant ``w_aux_3d`` for the rest of training.
+    w_aux_3d_target  = float(cfg_m.get('w_aux_3d',             0.1))
+    aux_warmup_eps   = int  (cfg_m.get('aux_3d_warmup_epochs', 1))
+    aux_depth_weight = float(cfg_m.get('aux_3d_depth_weight',  1.0))
+    aux_temperature  = cfg_m.get('aux_3d_temperature', None)
+    if aux_temperature is not None:
+        aux_temperature = float(aux_temperature)
 
-    depth_loss_name = str(cfg_m.get('depth_loss', 'si_log')).lower()
-    si_lambda       = float(cfg_m.get('lambda_si',     0.5))
+    grad_clip = float(cfg_t.get('gradient_clipping', 0.0))
 
-    # ---- Curriculum / weight schedule ----------------------------------
-    warmup_epochs          = int(cfg_m.get('curriculum_warmup_epochs',         1))
-    ray_start_epoch        = int(cfg_m.get('ray_start_epoch',                  5))
-    annealing_last_epochs  = int(cfg_m.get('curriculum_annealing_last_epochs', 2))
-    detach_until_epoch     = int(cfg_m.get('detach_depth_grads_to_trunk_for_epochs', 2))
-
-    w_d_dense_start = float(cfg_m.get('w_d_dense_start', 0.30))
-    w_d_dense_end   = float(cfg_m.get('w_d_dense_end',   0.10))
-    w_ratio_start   = float(cfg_m.get('w_ratio_start',   0.50))
-    w_ratio_end     = float(cfg_m.get('w_ratio_end',     0.20))
-    w_ray3d_start   = float(cfg_m.get('w_ray3d_start',   0.05))
-    w_ray3d_end     = float(cfg_m.get('w_ray3d_end',     0.20))
-    w_consist       = float(cfg_m.get('w_consist',       0.0))   # default OFF
-    w_inout         = float(cfg_m.get('bce_weight',      0.0))   # legacy alias
-
-    ray_gamma       = float(cfg_m.get('ray_gamma',       0.5))
-    ray_w_cos       = float(cfg_m.get('ray_w_cos',       1.0))
-    ray_w_l1        = float(cfg_m.get('ray_w_l1',        0.5))
-    dense_alpha     = float(cfg_m.get('dense_alpha_gaussian', 0.5))
-
-    grad_clip       = float(cfg_t.get('gradient_clipping', 0.0))
-
-    print(f"Curriculum: warmup={warmup_epochs}  "
-          f"ray_start={ray_start_epoch}  "
-          f"annealing_tail={annealing_last_epochs}  "
-          f"detach_until={detach_until_epoch}  "
-          f"depth_loss={depth_loss_name}  "
-          f"w_consist={w_consist} ({'ON' if w_consist > 0 else 'OFF'})")
+    print(f"Auxiliary loss: gaze3d_aux  w_aux_3d={w_aux_3d_target}  "
+          f"warmup={aux_warmup_eps} epoch(s)  "
+          f"depth_weight={aux_depth_weight}  "
+          f"temperature={aux_temperature}")
 
     # ---- Training loop --------------------------------------------------
     best_avg_l2 = float("inf")
     best_epoch  = None
 
     for epoch in range(pre_epochs):
-        # ---- Schedule: weights + detach flag --------------------------
-        w_d_dense, w_ratio, w_ray3d, detach_flag, phase = _curriculum_weights(
-            epoch,
-            total_epochs=pre_epochs,
-            warmup_epochs=warmup_epochs,
-            ray_start_epoch=ray_start_epoch,
-            annealing_last_epochs=annealing_last_epochs,
-            detach_until_epoch=detach_until_epoch,
-            w_d_dense_start=w_d_dense_start, w_d_dense_end=w_d_dense_end,
-            w_ratio_start  =w_ratio_start,   w_ratio_end  =w_ratio_end,
-            w_ray3d_start  =w_ray3d_start,   w_ray3d_end  =w_ray3d_end,
-        )
-        model.set_detach_depth_grads(detach_flag)
-        print(f"[Epoch {epoch}] phase={phase}  "
-              f"w_d_dense={w_d_dense:.3f}  w_ratio={w_ratio:.3f}  "
-              f"w_ray3d={w_ray3d:.3f}  detach={detach_flag}  "
+        # Linear warmup of w_aux_3d from 0 → w_aux_3d_target.
+        if aux_warmup_eps <= 0 or epoch >= aux_warmup_eps:
+            w_aux_cur = w_aux_3d_target
+        else:
+            w_aux_cur = w_aux_3d_target * (epoch + 1) / float(aux_warmup_eps + 1)
+
+        print(f"[Epoch {epoch}] w_aux_3d={w_aux_cur:.4f}  "
               f"lr={optimizer.param_groups[0]['lr']:.2e}")
 
         # ---- TRAIN EPOCH ---------------------------------------------
         model.train()
-        sums = {'total': 0.0, 'hm': 0.0, 'd_dense': 0.0,
-                'ratio': 0.0, 'ray3d': 0.0, 'consist': 0.0, 'io': 0.0}
+        sums = {'total': 0.0, 'hm': 0.0, 'aux': 0.0}
         n_iters = len(train_dl)
 
         for cur_iter, batch in tqdm(enumerate(train_dl), total=n_iters,
                                      desc=f"Epoch {epoch + 1}/{pre_epochs}"):
             (imgs, bboxes, gazex, gazey, inout, heights, widths,
-             heatmaps, dense_depth_gt, gt_zg, gt_zh) = batch
+             heatmaps, depth_64) = batch
 
             optimizer.zero_grad()
             preds = model({
                 "images": imgs.to(device),
                 "bboxes": [[bbox] for bbox in bboxes],
             })
+            pred_hm = torch.stack(preds['heatmap']).squeeze(dim=1)   # [B, 64, 64]
 
-            pred_hm    = torch.stack(preds['heatmap']).squeeze(dim=1)        # [B, 64, 64]
-            pred_dense = torch.stack(preds['depth_dense']).squeeze(dim=1)    # [B, 64, 64]
-            pred_zg    = torch.cat(preds['depth_gaze'], 0)                   # [B]
-            pred_zh    = torch.cat(preds['depth_head'], 0)                   # [B]
+            # ---- 1. Heatmap BCE (primary, dominant) ----
+            l_hm = SCALAR * heatmap_loss_fn(pred_hm, heatmaps.to(device))
 
-            gt_hm_d    = heatmaps.to(device)
-            gt_dense_d = dense_depth_gt.to(device)
-            gt_zg_d    = torch.as_tensor(gt_zg, dtype=torch.float32, device=device)
-            gt_zh_d    = torch.as_tensor(gt_zh, dtype=torch.float32, device=device)
-
-            # ---- 1. Heatmap loss (primary) ---------------------------
-            l_hm = SCALAR * heatmap_loss_fn(pred_hm, gt_hm_d)
-
-            # ---- 2. Dense depth distillation -------------------------
-            if w_d_dense > 0:
-                l_d_dense = dense_si_log_loss(
-                    pred_dense, gt_dense_d,
-                    gaussian_mask=gt_hm_d,
-                    alpha=dense_alpha,
-                    lambda_si=si_lambda,
-                )
-            else:
-                l_d_dense = torch.zeros((), device=device)
-
-            # ---- 3. Anchored log-ratio -------------------------------
-            if w_ratio > 0:
-                if depth_loss_name == 'si_log':
-                    l_ratio = anchored_si_log_loss(
-                        pred_zg, pred_zh, gt_zg_d, gt_zh_d,
-                        lambda_si=si_lambda)
-                else:
-                    l_ratio = anchored_log_huber_loss(
-                        pred_zg, pred_zh, gt_zg_d, gt_zh_d)
-            else:
-                l_ratio = torch.zeros((), device=device)
-
-            # ---- 4. 3-D ray-tracing loss (enabled after warmup) ------
-            if w_ray3d > 0:
+            # ---- 2. Composite auxiliary 3-D loss (single term) ----
+            if w_aux_cur > 0:
                 gt_gx   = torch.tensor([g[0] for g in gazex],
                                        dtype=torch.float32, device=device)
                 gt_gy   = torch.tensor([g[0] for g in gazey],
@@ -629,70 +523,33 @@ def main():
                 head_cy = torch.tensor([(b[1] + b[3]) / 2.0 for b in bboxes],
                                        dtype=torch.float32, device=device)
                 inout_mask = (inout.to(device) > 0)
-                l_ray3d = gaze_ray_3d_loss(
-                    pred_hm, pred_zg, pred_zh,
-                    gt_gx, gt_gy, gt_zg_d, gt_zh_d,
-                    head_cx, head_cy,
-                    gamma=ray_gamma, w_cos=ray_w_cos, w_l1=ray_w_l1,
+                l_aux = gaze3d_aux_loss(
+                    pred_hm,
+                    gt_gx, gt_gy, head_cx, head_cy,
+                    depth_norm=depth_64.to(device),
                     mask=inout_mask,
+                    depth_weight=aux_depth_weight,
+                    temperature=aux_temperature,
                 )
             else:
-                l_ray3d = torch.zeros((), device=device)
+                l_aux = torch.zeros((), device=device)
 
-            # ---- 5. (Optional) consistency between dense & anchored --
-            if w_consist > 0:
-                head_cx_c = [(b[0] + b[2]) / 2.0 for b in bboxes]
-                head_cy_c = [(b[1] + b[3]) / 2.0 for b in bboxes]
-                gx_c      = [g[0] for g in gazex]
-                gy_c      = [g[0] for g in gazey]
-                l_consist = anchored_consistency_loss(
-                    pred_dense, pred_zg, pred_zh,
-                    gx_c, gy_c, head_cx_c, head_cy_c,
-                )
-            else:
-                l_consist = torch.zeros((), device=device)
-
-            # ---- 6. (Optional) inout BCE / focal --------------------
-            if w_inout > 0 and preds['inout'] is not None:
-                pred_io = torch.cat(preds['inout'], 0)
-                gt_io   = inout.float().to(device)
-                l_io    = inout_loss_fn(pred_io, gt_io)
-            else:
-                l_io = torch.zeros((), device=device)
-
-            loss = (l_hm
-                    + w_d_dense * l_d_dense
-                    + w_ratio   * l_ratio
-                    + w_ray3d   * l_ray3d
-                    + w_consist * l_consist
-                    + w_inout   * l_io)
-
+            loss = l_hm + w_aux_cur * l_aux
             loss.backward()
             if grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
 
-            sums['total']   += float(loss.item())
-            sums['hm']      += float(l_hm.item())
-            sums['d_dense'] += float(l_d_dense.item())
-            sums['ratio']   += float(l_ratio.item())
-            sums['ray3d']   += float(l_ray3d.item())
-            sums['consist'] += float(l_consist.item())
-            sums['io']      += float(l_io.item())
+            sums['total'] += float(loss.item())
+            sums['hm']    += float(l_hm.item())
+            sums['aux']   += float(l_aux.item())
 
             if cur_iter % config['logging']['save_every'] == 0:
                 wandb.log({
                     "train/loss":         float(loss.item()),
                     "train/heatmap_loss": float(l_hm.item()),
-                    "train/d_dense_loss": float(l_d_dense.item()),
-                    "train/ratio_loss":   float(l_ratio.item()),
-                    "train/ray3d_loss":   float(l_ray3d.item()),
-                    "train/consist_loss": float(l_consist.item()),
-                    "train/inout_loss":   float(l_io.item()),
-                    "train/w_d_dense":    w_d_dense,
-                    "train/w_ratio":      w_ratio,
-                    "train/w_ray3d":      w_ray3d,
-                    "train/detach":       int(detach_flag),
+                    "train/aux_loss":     float(l_aux.item()),
+                    "train/w_aux_3d":     w_aux_cur,
                     "train/lr":           optimizer.param_groups[0]['lr'],
                 })
 
@@ -700,41 +557,27 @@ def main():
         ck_path = os.path.join(exp_dir, f'epoch_{epoch}.pt')
         torch.save(model.get_gazelle_state_dict(), ck_path)
         print(f"Saved checkpoint to {ck_path}")
-
         print(f"  Train means: total={sums['total']/n_iters:.4f}  "
               f"hm={sums['hm']/n_iters:.4f}  "
-              f"d_dense={sums['d_dense']/n_iters:.4f}  "
-              f"ratio={sums['ratio']/n_iters:.4f}  "
-              f"ray3d={sums['ray3d']/n_iters:.4f}  "
-              f"consist={sums['consist']/n_iters:.4f}  "
-              f"io={sums['io']/n_iters:.4f}")
+              f"aux={sums['aux']/n_iters:.4f}")
 
-        # ---- EVAL (2D primary + 3D secondary) ------------------------
+        # ---- EVAL ----
+        # 2-D primary metrics (AUC, AvgL2, MinL2) + 3-D-proxy secondary
+        # metrics computed by sampling GT DA2 depth at the argmax of the
+        # predicted heatmap (no model depth output).
         model.eval()
         avg_l2s, min_l2s, aucs = [], [], []
-        pred_zg_all, pred_zh_all = [], []
-        gt_zg_all,   gt_zh_all   = [], []
-        l2_3d_all, angle_3d_all  = [], []
+        l2_3d_all, angle_3d_all = [], []
 
         for batch in tqdm(eval_dl, total=len(eval_dl), desc=f"Eval {epoch}"):
             (imgs, bboxes, gazex, gazey, inout, heights, widths,
-             gt_zg, gt_zh) = batch
+             depth_64) = batch
             with torch.no_grad():
                 preds = model({
                     "images": imgs.to(device),
                     "bboxes": [[bbox] for bbox in bboxes],
                 })
-
             pred_hm = torch.stack(preds['heatmap']).squeeze(dim=1)
-            pred_zg = torch.cat(preds['depth_gaze'], 0).detach().cpu()
-            pred_zh = torch.cat(preds['depth_head'], 0).detach().cpu()
-            gt_zg_t = torch.as_tensor(gt_zg, dtype=torch.float32)
-            gt_zh_t = torch.as_tensor(gt_zh, dtype=torch.float32)
-
-            pred_zg_all.append(pred_zg)
-            pred_zh_all.append(pred_zh)
-            gt_zg_all.append(gt_zg_t)
-            gt_zh_all.append(gt_zh_t)
 
             for i in range(pred_hm.shape[0]):
                 hm_cpu = pred_hm[i].detach().cpu()
@@ -745,55 +588,35 @@ def main():
                 avg_l2s.append(avg_l2)
                 min_l2s.append(min_l2)
 
-                gx_mean = float(np.mean(gazex[i]))
-                gy_mean = float(np.mean(gazey[i]))
+                # 3-D-proxy metrics (no depth prediction).
+                d_np = depth_64[i].numpy()
+                l2_3d_all.append(l2_3d_proxy(
+                    hm_cpu.numpy(), gazex[i], gazey[i], d_np))
                 bbox = bboxes[i]
-                head_cx = (float(bbox[0]) + float(bbox[2])) * 0.5
-                head_cy = (float(bbox[1]) + float(bbox[3])) * 0.5
-                l2_3d_all.append(anchored_l2_3d(
-                    hm_cpu, pred_zg[i], pred_zh[i],
-                    gx_mean, gy_mean,
-                    gt_zg_t[i].item(), gt_zh_t[i].item(),
-                ))
-                angle_3d_all.append(gaze3d_angle_relative(
-                    hm_cpu, pred_zg[i], pred_zh[i],
-                    gx_mean, gy_mean,
-                    gt_zg_t[i].item(), gt_zh_t[i].item(),
-                    head_cx, head_cy,
-                ))
+                hcx = (float(bbox[0]) + float(bbox[2])) * 0.5
+                hcy = (float(bbox[1]) + float(bbox[3])) * 0.5
+                angle_3d_all.append(angle_3d_proxy(
+                    hm_cpu.numpy(), gazex[i], gazey[i], hcx, hcy, d_np))
 
         epoch_auc    = float(np.mean(aucs))
         epoch_avg_l2 = float(np.mean(avg_l2s))
         epoch_min_l2 = float(np.mean(min_l2s))
-
-        pred_zg_cat = torch.cat(pred_zg_all)
-        pred_zh_cat = torch.cat(pred_zh_all)
-        gt_zg_cat   = torch.cat(gt_zg_all)
-        gt_zh_cat   = torch.cat(gt_zh_all)
-        R_MAE  = float(ratio_mae (pred_zg_cat, pred_zh_cat, gt_zg_cat, gt_zh_cat).item())
-        R_RMSE = float(ratio_rmse(pred_zg_cat, pred_zh_cat, gt_zg_cat, gt_zh_cat).item())
-        D1     = float(anchored_delta1(
-            pred_zg_cat, pred_zh_cat, gt_zg_cat, gt_zh_cat).item())
-        L2_3D  = float(np.mean(l2_3d_all))    if l2_3d_all    else 0.0
-        A3D    = float(np.mean(angle_3d_all)) if angle_3d_all else 0.0
+        L2_3D = float(np.mean(l2_3d_all))    if l2_3d_all    else 0.0
+        A3D   = float(np.mean(angle_3d_all)) if angle_3d_all else 0.0
 
         wandb.log({
-            "eval/auc":        epoch_auc,
-            "eval/avg_l2":     epoch_avg_l2,
-            "eval/min_l2":     epoch_min_l2,
-            "eval/ratio_mae":  R_MAE,
-            "eval/ratio_rmse": R_RMSE,
-            "eval/delta1":     D1,
-            "eval/l2_3d":      L2_3D,
-            "eval/angle_3d":   A3D,
-            "epoch":           epoch,
+            "eval/auc":      epoch_auc,
+            "eval/avg_l2":   epoch_avg_l2,
+            "eval/min_l2":   epoch_min_l2,
+            "eval/l2_3d":    L2_3D,
+            "eval/angle_3d": A3D,
+            "epoch":         epoch,
         })
         print(f"EVAL EPOCH {epoch}: AUC={epoch_auc:.4f}  "
               f"AvgL2={epoch_avg_l2:.4f}  MinL2={epoch_min_l2:.4f}  |  "
-              f"RatioMAE={R_MAE:.4f}  RatioRMSE={R_RMSE:.4f}  "
-              f"δ1={D1:.4f}  L2-3D={L2_3D:.4f}  Angle-3D={A3D:.2f}°")
+              f"L2-3D(proxy)={L2_3D:.4f}  Angle-3D(proxy)={A3D:.2f}°")
 
-        # User: prioritise AvgL2 (not MinL2) as the 2-D headline metric.
+        # User: prioritise AvgL2 as the 2-D headline metric.
         if epoch_avg_l2 < best_avg_l2:
             best_avg_l2 = epoch_avg_l2
             best_epoch  = epoch
