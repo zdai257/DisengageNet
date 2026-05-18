@@ -444,6 +444,79 @@ def gaze_ray_3d_loss(pred_heatmap, pred_z_gaze, pred_z_head,
     return per_smp.mean()
 
 
+def depth_order_accuracy_proxy(
+    heatmap_np,            # [H, W] numpy array (single-sample, post-sigmoid)
+    gazex, gazey,          # iterable of float in [0, 1] — single-image GT annotations
+    head_cx, head_cy,      # float in [0, 1] — head bbox centre
+    depth_norm_np,         # [H_d, W_d] numpy array — per-image min-max-normalised DA2
+    ambiguity_eps=1e-3,
+):
+    """Single-sample Depth-Order Accuracy proxy.
+
+    Question answered: does the predicted gaze pixel lie on the *same
+    side* of the subject's head in normalised depth as the GT gaze pixel?
+    Formally, with depths sampled (nearest-neighbour) from the per-image
+    min-max-normalised DA2 map ``D̃``::
+
+        s_pred = sign(D̃[argmax(heatmap)] − D̃[head_centre])
+        s_gt   = sign(D̃[mean GT gaze]   − D̃[head_centre])
+        DOA_i  = 1 if s_pred == s_gt else 0
+
+    Properties:
+      • Scale-invariant: depends only on depth *ordering*, so it is
+        immune to the affine ambiguity of monocular relative depth.
+      • Bounded in {0, 1} per sample → averages to a percentage in
+        [0, 100%] across the evaluation set.
+      • Complementary to L2-3D (magnitude) and Angle-3D (full 3-D
+        direction): probes the binary "is the gazed object in-front
+        of / behind the subject's head" question that 2-D AUC cannot
+        see.
+      • Robust to DA2 noise: only the sign of a per-pixel depth
+        comparison is used.
+
+    Returns:
+        (is_correct, is_valid) tuple of booleans.  ``is_valid`` is False
+        when the GT gaze pixel is closer in normalised depth to the head
+        than ``ambiguity_eps``; such samples carry no meaningful
+        ordering signal and should be excluded from the DOA average by
+        the caller.
+    """
+    H, W = heatmap_np.shape
+    # Predicted (x, y) via heatmap argmax (peak).
+    argmax = int(heatmap_np.flatten().argmax())
+    py_idx, px_idx = np.unravel_index(argmax, heatmap_np.shape)
+    pred_xn = px_idx / float(W)
+    pred_yn = py_idx / float(H)
+
+    # GT gaze: mean over annotators (matches the proxy convention used
+    # for L2-3D and Angle-3D in train_gazefollow-depthaware.py).
+    gt_xn = float(np.mean(gazex))
+    gt_yn = float(np.mean(gazey))
+
+    Hd, Wd = depth_norm_np.shape
+
+    def _sample(xn, yn):
+        # Use floor(c · W) so that ``argmax_col / W`` round-trips back to
+        # ``argmax_col`` (consistent with the trainer's normalisation of
+        # the predicted (x, y)).
+        x = int(np.clip(int(float(xn) * Wd), 0, Wd - 1))
+        y = int(np.clip(int(float(yn) * Hd), 0, Hd - 1))
+        return float(depth_norm_np[y, x])
+
+    d_pred = _sample(pred_xn, pred_yn)
+    d_gt   = _sample(gt_xn,   gt_yn)
+    d_head = _sample(head_cx, head_cy)
+
+    # Skip degenerate samples where the GT gaze sits on (or essentially
+    # on) the head's depth manifold — there is no meaningful sign.
+    if abs(d_gt - d_head) < ambiguity_eps:
+        return False, False
+
+    s_pred = (d_pred - d_head) > 0.0
+    s_gt   = (d_gt   - d_head) > 0.0
+    return (s_pred == s_gt), True
+
+
 def gaze3d_aux_loss(
     pred_heatmap,         # [B, H, W]  sigmoid heatmap
     gt_gazex, gt_gazey,   # [B]        normalised in [0, 1]

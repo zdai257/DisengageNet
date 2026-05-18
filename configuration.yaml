@@ -1,7 +1,7 @@
 # General Configuration
 model:
   name: "gazemoe_dinov2_vitl14_inout"  # gazemoe_dinov2_vit{b14,l14}{,_inout} | gt3d_dinov2_vit{b14,l14}{,_inout}
-  pretrained_path: ""  #"pretrainShared_epoch_14.pt" or "gazelle_dinov2_vitl14_inout.pt" or "pretrainMoE_MSF1_best.pt"
+  pretrained_path: "pretrainMoE_MSF1_best.pt"  # warm-start from SoTA GazeMoE; "" → from scratch
   mlp_ratio: 1  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size [1, 2, 4]
   num_experts: 4  # Routed experts [3, 4, 6]
   num_shared_experts: 1  # Shared experts [1, 2]
@@ -44,8 +44,11 @@ model:
   # Scale-invariant in normalised (x, y, depth) ∈ [0, 1]³; NOT a rigid 3-D
   # angle.  No depth prediction; the model outputs only the heatmap at
   # inference and no .npy is needed at deploy time.
-  w_aux_3d:             0.1   # overall weight on L_aux (small ⇒ BCE dominates)
-  aux_3d_warmup_epochs: 1     # linear warmup of w_aux from 0 over the first N epochs
+  # Finetune-mode defaults (warm-started from pretrainMoE_MSF1_best.pt):
+  # keep the auxiliary signal small and ramp it slowly so the GazeMoE
+  # 2-D basin is preserved before depth coherence is enforced.
+  w_aux_3d:             0.02  # overall weight on L_aux (small ⇒ BCE dominates)
+  aux_3d_warmup_epochs: 3     # linear warmup of w_aux from 0 over the first N epochs
   aux_3d_depth_weight:  1.0   # internal balance of depth-coherence vs 2-D angular
   aux_3d_temperature: null    # null → use sigmoid heatmap as probability;
                               # set a float (e.g. 0.05) for a sharper softmax attention
@@ -87,21 +90,24 @@ train:
     gamma: 0.1                      # Decay factor for step/exponential scheduler
     min_lr: 1e-7                    # Minimum learning rate for cosine/other schedulers
   gradient_clipping: 5.0            # Gradient clipping threshold
-  # GazeFollow pretrain hyperparams
-  pre_lr: 0.001
-  pre_fuse_lr: 0.001
-  pre_block_lr: 0.001
-  pre_batch_size: 60   # 60
-  pre_epochs: 15
+  # Depth-aware GazeFollow finetune (warm-start from pretrainMoE_MSF1_best.pt).
+  # LR is ~10x lower than the from-scratch pretrain since the 2-D basin is
+  # already won; we only nudge the network toward depth coherence.
+  pre_lr: 0.0001
+  pre_fuse_lr: 0.0001
+  pre_block_lr: 0.0001
+  pre_batch_size: 60
+  pre_epochs: 8
   pre_optimizer: "Adam"
+  pre_weight_decay: 0.01  # only for AdamW
   # Staged DINOv2: 0 = train last N blocks from epoch 0; else unfreeze at this 0-based epoch index
   backbone_unfreeze_start_epoch: 1000  # Stop unfreezing Backbone
   backbone_train_last_blocks: 4
   pre_backbone_lr: 0.000005
   pre_lr_scheduler:
     type: "warmup_cosine"           # warmup_cosine | cosine | warmup | StepLR-compatible keys
-    warmup_epochs: 2
-    step_size: 15                   # used by cosine / step branches only
+    warmup_epochs: 1                # finetune-mode: short LR warmup
+    step_size: 8                    # used by cosine / step branches only
     gamma: 0.1
     min_lr: 1e-7
 

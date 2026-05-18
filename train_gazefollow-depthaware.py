@@ -61,7 +61,7 @@ from network.network_builder_update2 import get_gazemoe_model
 import network.utils as utils
 from network.utils import get_depthaware_heatmap
 
-from train_depth_goo import gaze3d_aux_loss
+from train_depth_goo import gaze3d_aux_loss, depth_order_accuracy_proxy
 
 
 # --------------------------------------------------------------------------
@@ -253,10 +253,15 @@ def collate_fn(batch):
 # --------------------------------------------------------------------------
 
 def _sample_depth_at(depth_64, x_norm, y_norm):
-    """Nearest-pixel sample of a [64, 64] depth map at normalised (x, y)."""
+    """Nearest-pixel sample of a [H, W] depth map at normalised (x, y).
+
+    Uses ``floor(c · W)`` so that ``argmax_col / W`` round-trips back to
+    ``argmax_col`` — the same convention as the heatmap-argmax → norm-xy
+    used by ``l2_3d_proxy`` / ``angle_3d_proxy``.
+    """
     H, W = depth_64.shape
-    x = int(np.clip(round(float(x_norm) * (W - 1)), 0, W - 1))
-    y = int(np.clip(round(float(y_norm) * (H - 1)), 0, H - 1))
+    x = int(np.clip(int(float(x_norm) * W), 0, W - 1))
+    y = int(np.clip(int(float(y_norm) * H), 0, H - 1))
     return float(depth_64[y, x])
 
 
@@ -362,6 +367,21 @@ def main():
         param.requires_grad = False
     print(f"Learnable parameters: "
           f"{sum(p.numel() for p in model.parameters() if p.requires_grad)}")
+
+    # --- Optional warm-start from a SoTA GazeMoE checkpoint -------------
+    # The model is bit-identical to GazeMoE, so a checkpoint containing
+    # only the learnable (non-backbone) parameters loads cleanly via the
+    # model's own ``load_gazelle_state_dict``.  When this is set, the run
+    # is effectively a depth-aware *finetune* of GazeMoE rather than a
+    # from-scratch pretrain, which keeps the 2-D AUC / AvgL2 basin.
+    pretrained_path = cfg_m.get('pretrained_path', '')
+    if pretrained_path and os.path.isfile(pretrained_path):
+        print(f"Warm-starting from {pretrained_path}")
+        sd = torch.load(pretrained_path, map_location='cpu', weights_only=True)
+        model.load_gazelle_state_dict(sd, include_backbone=False)
+    elif pretrained_path:
+        print(f"WARN pretrained_path set but file not found: {pretrained_path!r}  "
+              f"— training from scratch.")
 
     model.to(device)
 
@@ -568,6 +588,7 @@ def main():
         model.eval()
         avg_l2s, min_l2s, aucs = [], [], []
         l2_3d_all, angle_3d_all = [], []
+        doa_correct, doa_valid = 0, 0
 
         for batch in tqdm(eval_dl, total=len(eval_dl), desc=f"Eval {epoch}"):
             (imgs, bboxes, gazex, gazey, inout, heights, widths,
@@ -590,31 +611,42 @@ def main():
 
                 # 3-D-proxy metrics (no depth prediction).
                 d_np = depth_64[i].numpy()
-                l2_3d_all.append(l2_3d_proxy(
-                    hm_cpu.numpy(), gazex[i], gazey[i], d_np))
+                hm_np = hm_cpu.numpy()
                 bbox = bboxes[i]
                 hcx = (float(bbox[0]) + float(bbox[2])) * 0.5
                 hcy = (float(bbox[1]) + float(bbox[3])) * 0.5
+
+                l2_3d_all.append(l2_3d_proxy(
+                    hm_np, gazex[i], gazey[i], d_np))
                 angle_3d_all.append(angle_3d_proxy(
-                    hm_cpu.numpy(), gazex[i], gazey[i], hcx, hcy, d_np))
+                    hm_np, gazex[i], gazey[i], hcx, hcy, d_np))
+                is_correct, is_valid = depth_order_accuracy_proxy(
+                    hm_np, gazex[i], gazey[i], hcx, hcy, d_np)
+                if is_valid:
+                    doa_valid   += 1
+                    doa_correct += int(bool(is_correct))
 
         epoch_auc    = float(np.mean(aucs))
         epoch_avg_l2 = float(np.mean(avg_l2s))
         epoch_min_l2 = float(np.mean(min_l2s))
         L2_3D = float(np.mean(l2_3d_all))    if l2_3d_all    else 0.0
         A3D   = float(np.mean(angle_3d_all)) if angle_3d_all else 0.0
+        DOA   = (100.0 * doa_correct / doa_valid) if doa_valid > 0 else 0.0
 
         wandb.log({
-            "eval/auc":      epoch_auc,
-            "eval/avg_l2":   epoch_avg_l2,
-            "eval/min_l2":   epoch_min_l2,
-            "eval/l2_3d":    L2_3D,
-            "eval/angle_3d": A3D,
-            "epoch":         epoch,
+            "eval/auc":         epoch_auc,
+            "eval/avg_l2":      epoch_avg_l2,
+            "eval/min_l2":      epoch_min_l2,
+            "eval/l2_3d":       L2_3D,
+            "eval/angle_3d":    A3D,
+            "eval/doa_percent": DOA,
+            "eval/doa_n_valid": doa_valid,
+            "epoch":            epoch,
         })
         print(f"EVAL EPOCH {epoch}: AUC={epoch_auc:.4f}  "
               f"AvgL2={epoch_avg_l2:.4f}  MinL2={epoch_min_l2:.4f}  |  "
-              f"L2-3D(proxy)={L2_3D:.4f}  Angle-3D(proxy)={A3D:.2f}°")
+              f"L2-3D(proxy)={L2_3D:.4f}  Angle-3D(proxy)={A3D:.2f}°  "
+              f"DOA={DOA:.2f}% (n_valid={doa_valid})")
 
         # User: prioritise AvgL2 as the 2-D headline metric.
         if epoch_avg_l2 < best_avg_l2:
