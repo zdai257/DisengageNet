@@ -75,8 +75,8 @@ def parse_args():
     p.add_argument("--splits", type=str, nargs="*", default=None,
                    help="Optional list of sub-folders under image_dir to process "
                         "(e.g. --splits train test).  Default: recurse over all.")
-    p.add_argument("--encoder", type=str, choices=list(MODEL_CONFIGS), default="vitl",
-                   help="DepthAnythingV2 backbone variant.")
+    p.add_argument("--encoder", type=str, choices=list(MODEL_CONFIGS), default="vitb",
+                   help="DepthAnythingV2 backbone 'base' variant as default.")
     p.add_argument("--ckpt_dir", type=str, default="../Depth-Anything-V2/checkpoints",
                    help="Directory containing depth_anything_v2_<encoder>.pth.")
     p.add_argument("--input_size", type=int, default=518,
