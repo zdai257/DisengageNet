@@ -120,14 +120,18 @@ def parse_args() -> argparse.Namespace:
                    help="Filesystem path to the dataset root.")
     p.add_argument("--split_file", type=str, default=None,
                    help="Override the default per-dataset annotations file.")
-    p.add_argument("--depth_dir", type=str, default="depth",
-                   help="Sub-folder under data_root holding .npy depth maps.")
+    p.add_argument("--depth_dir", type=str, default="",
+                   help="Sub-folder under data_root holding .npy depth maps.  "
+                        "Empty string, 'none', or 'off' disables the cache "
+                        "lookup and auto-enables on-the-fly DepthAnythingV2 "
+                        "inference.")
     p.add_argument("--depth_on_the_fly", action="store_true",
                    help="If a depth file is missing, run DepthAnythingV2 at "
-                        "runtime instead of skipping the 3-D metrics.")
+                        "runtime instead of skipping the 3-D metrics.  "
+                        "Auto-enabled when --depth_dir is empty / 'none' / 'off'.")
     p.add_argument("--da2_encoder", choices=["vits", "vitb", "vitl"],
                    default="vitb",
-                   help="DepthAnythingV2 backbone for on-the-fly depth.")
+                   help="DepthAnythingV2 backbone 'base' for on-the-fly depth.")
     p.add_argument("--da2_ckpt_dir", type=str,
                    default="../Depth-Anything-V2/checkpoints")
     p.add_argument("--batch_size", type=int, default=60)
@@ -162,9 +166,24 @@ def parse_args() -> argparse.Namespace:
 #   depth_path  : str | None   — resolved at iteration time
 # ----------------------------------------------------------------------------
 
+_DEPTH_DIR_OFF = {"", "none", "off", "no", "false"}
+
+
+def _depth_cache_disabled(depth_dir: Optional[str]) -> bool:
+    """A depth-dir value of ``""`` / ``none`` / ``off`` means no cache lookup."""
+    return depth_dir is None or str(depth_dir).strip().lower() in _DEPTH_DIR_OFF
+
+
 def _resolve_depth_path(data_root: str, image_rel_path: str,
-                        depth_dir: str) -> str:
-    """Translate ``images/foo/bar.jpg`` into ``<depth_dir>/foo/bar.npy``."""
+                        depth_dir: Optional[str]) -> Optional[str]:
+    """Translate ``images/foo/bar.jpg`` into ``<depth_dir>/foo/bar.npy``.
+
+    Returns ``None`` when the depth cache has been disabled (empty / none / off),
+    which lets the downstream code skip the cache lookup entirely and fall
+    through to on-the-fly DepthAnythingV2 inference.
+    """
+    if _depth_cache_disabled(depth_dir):
+        return None
     rel = image_rel_path.replace("images" + os.sep, depth_dir + os.sep, 1)
     if rel == image_rel_path:
         rel = os.path.join(depth_dir, image_rel_path)
@@ -277,7 +296,7 @@ class DepthSource:
 
     def get(self, sample: Dict[str, Any], data_root: str,
             target_hw: Tuple[int, int] = (64, 64)) -> Optional[np.ndarray]:
-        path = sample.get("depth_path", "")
+        path = sample.get("depth_path") or ""
         depth_full: Optional[np.ndarray] = None
         if path and os.path.isfile(path):
             depth_full = np.load(path).astype(np.float32)
@@ -731,9 +750,42 @@ def main():
     print(f"Loaded {len(samples)} samples from "
           f"{os.path.join(args.data_root, args.split_file or '<default>')}")
 
-    # ---- Depth source -----
+    # ---- Depth source ----------------------------------------------------
+    # 1. Empty / none / off depth_dir ⇒ auto-enable on-the-fly DA2 inference.
+    # 2. Else, probe the first few samples' resolved .npy paths.  If none
+    #    exists, on-the-fly DA2 is enabled with a clear warning (and an
+    #    explanation if on-the-fly was not requested explicitly).
+    cache_disabled = _depth_cache_disabled(args.depth_dir)
+    depth_on_the_fly = bool(args.depth_on_the_fly)
+    if cache_disabled and not depth_on_the_fly:
+        depth_on_the_fly = True
+        print("[depth] --depth_dir is empty/none/off ⇒ "
+              "auto-enabling on-the-fly DepthAnythingV2 inference.")
+    elif not cache_disabled:
+        probed = [s for s in samples[:32]
+                  if s.get("depth_path") and os.path.isfile(s["depth_path"])]
+        n_probe = min(32, len(samples))
+        if not probed and n_probe > 0:
+            example = samples[0].get("depth_path", "<unresolved>")
+            print(f"[depth] WARNING — no cached depth .npy found under "
+                  f"--depth_dir='{args.depth_dir}' (probed {n_probe} samples, "
+                  f"e.g. {example!r}).")
+            if not depth_on_the_fly:
+                depth_on_the_fly = True
+                print("[depth] Auto-enabling on-the-fly DepthAnythingV2 "
+                      "inference for this run.  Pass --depth_dir '' to make "
+                      "this explicit, or run preprocess_Depth.py to cache "
+                      "the maps for future runs.")
+        else:
+            print(f"[depth] Using cached depth at "
+                  f"<data_root>/{args.depth_dir}/  "
+                  f"({len(probed)}/{n_probe} probed samples have a .npy).")
+    if depth_on_the_fly:
+        print(f"[depth] On-the-fly engine: DepthAnythingV2-{args.da2_encoder} "
+              f"(ckpt dir: {args.da2_ckpt_dir})")
+
     depth_src = DepthSource(
-        depth_on_the_fly=args.depth_on_the_fly,
+        depth_on_the_fly=depth_on_the_fly,
         da2_encoder=args.da2_encoder,
         da2_ckpt_dir=args.da2_ckpt_dir,
         device=device,

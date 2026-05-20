@@ -97,8 +97,8 @@ train:
   pre_fuse_lr: 0.0001
   pre_block_lr: 0.0001
   pre_batch_size: 60
-  pre_epochs: 8
-  pre_optimizer: "Adam"
+  pre_epochs: 12
+  pre_optimizer: "AdamW"
   pre_weight_decay: 0.01  # only for AdamW
   # Staged DINOv2: 0 = train last N blocks from epoch 0; else unfreeze at this 0-based epoch index
   backbone_unfreeze_start_epoch: 1000  # Stop unfreezing Backbone
@@ -119,8 +119,8 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/gazemoe_depthaux/"                        # auto naming for GT3D finetune
-  pre_dir: "results/pretrain_gazemoe_depthaux/"   # depth-aware GazeFollow pretrain
+  log_dir: "results/gazemoe_gt3d/"                        # auto naming for GT3D finetune
+  pre_dir: "results/pretrain_gazemoeFT_gt3d-goosynth/"   # depth-aware GazeFollow pretrain
   save_every: 5
 
 hardware:
