@@ -187,19 +187,29 @@ def _depth_cache_disabled(depth_dir: Optional[str]) -> bool:
 
 def _resolve_depth_path(data_root: str, image_rel_path: str,
                         depth_dir: Optional[str]) -> Optional[str]:
-    """Translate ``images/foo/bar.jpg`` into ``<depth_dir>/foo/bar.npy``.
+    """Translate an image path into its cached ``.npy`` depth map.
 
-    Returns ``None`` when the depth cache has been disabled (empty / none / off),
-    which lets the downstream code skip the cache lookup entirely and fall
-    through to on-the-fly DepthAnythingV2 inference.
+    ``preprocess_Depth`` mirrors paths *relative to* ``<image_dir>`` (usually
+    ``images/``), so the depth file lives at::
+
+        <data_root>/<depth_dir>/<relpath-within-images>.npy
+
+    not ``<depth_dir>/images/...`` unless an older preprocess run stored
+    the full mirror (we try that as a fallback).
     """
     if _depth_cache_disabled(depth_dir):
         return None
-    rel = image_rel_path.replace("images" + os.sep, depth_dir + os.sep, 1)
-    if rel == image_rel_path:
-        rel = os.path.join(depth_dir, image_rel_path)
+    rel = image_rel_path.replace("\\", "/")
+    if rel.startswith("images/"):
+        rel = rel[len("images/"):]
     rel = os.path.splitext(rel)[0] + ".npy"
-    return os.path.join(data_root, rel)
+    primary = os.path.join(data_root, depth_dir, rel)
+    if os.path.isfile(primary):
+        return primary
+    alt = os.path.join(data_root, depth_dir,
+                       os.path.splitext(image_rel_path.replace("\\", "/"))[0]
+                       + ".npy")
+    return alt if os.path.isfile(alt) else primary
 
 
 def _emit_head_sample(path: str, head: Dict[str, Any], w: int, h: int,

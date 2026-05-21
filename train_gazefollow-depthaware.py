@@ -154,13 +154,18 @@ class GazeDepthDataset(torch.utils.data.Dataset):
 
     # ----------------------------------------------------------------------
     def _depth_path(self, image_rel_path):
-        """Map ``train/0001/0001.jpg`` → ``depth/train/0001/0001.npy``."""
-        rel = image_rel_path.replace("images" + os.sep,
-                                     self.depth_dir + os.sep, 1)
-        if rel == image_rel_path:
-            rel = os.path.join(self.depth_dir, image_rel_path)
+        """Map image rel-path → cached DA2 .npy (preprocess_Depth layout)."""
+        rel = image_rel_path.replace("\\", "/")
+        if rel.startswith("images/"):
+            rel = rel[len("images/"):]
         rel = os.path.splitext(rel)[0] + ".npy"
-        return os.path.join(self.path, rel)
+        primary = os.path.join(self.path, self.depth_dir, rel)
+        if os.path.isfile(primary):
+            return primary
+        alt = os.path.join(self.path, self.depth_dir,
+                           os.path.splitext(image_rel_path.replace("\\", "/"))[0]
+                           + ".npy")
+        return alt if os.path.isfile(alt) else primary
 
     def _load_depth_npy(self, image_rel_path):
         return np.load(self._depth_path(image_rel_path)).astype(np.float32)

@@ -144,15 +144,25 @@ class ChildPlayDepthDataset(torch.utils.data.Dataset):
               f"{num_other_cls} skipped)")
 
     def _depth_path(self, image_rel_path):
-        rel = image_rel_path.replace("images" + os.sep,
-                                     self.depth_dir + os.sep, 1)
-        if rel == image_rel_path:
-            rel = os.path.join(self.depth_dir, image_rel_path)
+        """See ``VATDepthDataset._depth_path`` — same preprocess_Depth layout."""
+        rel = image_rel_path.replace("\\", "/")
+        if rel.startswith("images/"):
+            rel = rel[len("images/"):]
         rel = os.path.splitext(rel)[0] + ".npy"
-        return os.path.join(self.dir_path, rel)
+        primary = os.path.join(self.dir_path, self.depth_dir, rel)
+        if os.path.isfile(primary):
+            return primary
+        alt = os.path.join(self.dir_path, self.depth_dir,
+                           os.path.splitext(image_rel_path.replace("\\", "/"))[0]
+                           + ".npy")
+        return alt if os.path.isfile(alt) else primary
 
     def _load_depth_pil(self, image_rel_path, target_size):
         depth_path = self._depth_path(image_rel_path)
+        if not os.path.isfile(depth_path):
+            raise FileNotFoundError(
+                f"Depth map not found: {depth_path!r}  "
+                f"(image={image_rel_path!r}; run preprocess_Depth.py on this dataset)")
         depth = np.load(depth_path).astype(np.float32)
         depth_pil = Image.fromarray(depth, mode="F")
         if depth_pil.size != target_size:
@@ -446,9 +456,10 @@ def main():
             pred_inout = torch.stack(preds["inout"]).squeeze(dim=1)
 
             in_mask = inout.to(device).bool()
+            heatmaps_dev = heatmaps.to(device)
             if in_mask.any():
                 l_hm = SCALAR * heatmap_loss_fn(
-                    pred_hm[in_mask], heatmaps[in_mask].to(device))
+                    pred_hm[in_mask], heatmaps_dev[in_mask])
             else:
                 l_hm = torch.zeros((), device=device)
 

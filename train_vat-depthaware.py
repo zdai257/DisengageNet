@@ -114,17 +114,33 @@ class VATDepthDataset(torch.utils.data.Dataset):
                     self.data_idxs.append((i, j))
 
     def _depth_path(self, image_rel_path):
-        rel = image_rel_path.replace("images" + os.sep,
-                                     self.depth_dir + os.sep, 1)
-        if rel == image_rel_path:
-            rel = os.path.join(self.depth_dir, image_rel_path)
+        """Map image rel-path → cached DA2 .npy.
+
+        ``preprocess_Depth`` writes::
+            <data_root>/<depth_dir>/<relpath-within-image_dir>.npy
+        i.e. the ``images/`` prefix from dataset JSON paths is *not*
+        replicated under ``depth/``.
+        """
+        rel = image_rel_path.replace("\\", "/")
+        if rel.startswith("images/"):
+            rel = rel[len("images/"):]
         rel = os.path.splitext(rel)[0] + ".npy"
-        return os.path.join(self.path, rel)
+        primary = os.path.join(self.path, self.depth_dir, rel)
+        if os.path.isfile(primary):
+            return primary
+        # Fallback: full mirror incl. images/ (older preprocess runs).
+        alt = os.path.join(self.path, self.depth_dir,
+                           os.path.splitext(image_rel_path.replace("\\", "/"))[0]
+                           + ".npy")
+        return alt if os.path.isfile(alt) else primary
 
     def _load_depth_pil(self, image_rel_path):
-        return Image.fromarray(
-            np.load(self._depth_path(image_rel_path)).astype(np.float32),
-            mode="F")
+        path = self._depth_path(image_rel_path)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(
+                f"Depth map not found: {path!r}  "
+                f"(image={image_rel_path!r}; run preprocess_Depth.py on this dataset)")
+        return Image.fromarray(np.load(path).astype(np.float32), mode="F")
 
     def __getitem__(self, idx):
         img_idx, head_idx = self.data_idxs[idx]
@@ -419,9 +435,10 @@ def main():
             pred_inout = torch.stack(preds["inout"]).squeeze(dim=1)
 
             in_mask = inout.to(device).bool()
+            heatmaps_dev = heatmaps.to(device)
             if in_mask.any():
                 l_hm = SCALAR * heatmap_loss_fn(
-                    pred_hm[in_mask], heatmaps[in_mask].to(device))
+                    pred_hm[in_mask], heatmaps_dev[in_mask])
             else:
                 l_hm = torch.zeros((), device=device)
 
