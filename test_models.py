@@ -12,6 +12,7 @@ Currently supports:
     Architectures (--arch)
         gazelle_vitb14,  gazelle_vitb14_inout
         gazelle_vitl14,  gazelle_vitl14_inout        (default)
+        gt360_vitl14_inout                          (multi-scale GazeLLE)
         gazemoe_vitl14_inout
         gt3d_vitl14_inout
         chong               (Chong et al., CVPR 2020 — per-frame variant)
@@ -60,6 +61,13 @@ Example
         --dataset gazefollow \\
         --data_root ./gazefollow_extended \\
         --batch_size 60
+
+    python test_models.py \\
+        --arch gt360_vitl14_inout \\
+        --checkpoint GT360_pretrain.pt \\
+        --dataset gazefollow \\
+        --data_root ./gazefollow_extended \\
+        --batch_size 60
 """
 
 from __future__ import annotations
@@ -95,6 +103,7 @@ ARCHES = [
     "gazelle_vitb14_inout",
     "gazelle_vitl14",
     "gazelle_vitl14_inout",
+    "gt360_vitl14_inout",
     "gazemoe_vitl14_inout",
     "gt3d_vitl14_inout",
     "chong",
@@ -112,9 +121,10 @@ def parse_args() -> argparse.Namespace:
                    default="gazelle_dinov2_vitl14_inout.pt",
                    help="Path to .pt under the repo root.")
     p.add_argument("--include_backbone", action="store_true",
-                   help="For Gazelle/GazeMoE/GT3D: also load backbone weights "
-                        "from the checkpoint (default: backbone is the frozen "
-                        "DINOv2 hub model, only the learnable parts are loaded).")
+                   help="For Gazelle/GT360/GazeMoE/GT3D: also load backbone "
+                        "weights from the checkpoint (default: backbone is the "
+                        "frozen DINOv2 hub model, only the learnable parts are "
+                        "loaded).")
     p.add_argument("--dataset", choices=DATASETS, default="gazefollow")
     p.add_argument("--data_root", type=str, required=True,
                    help="Filesystem path to the dataset root.")
@@ -634,6 +644,10 @@ def _make_minimal_config(arch: str) -> Dict[str, Any]:
         # ``gazelle_vitl14_inout`` → ``gazelle_dinov2_vitl14_inout``.
         suffix = arch.replace("gazelle_", "")
         base["name"] = f"gazelle_dinov2_{suffix}"
+    elif arch.startswith("gt360"):
+        # ``gt360_vitl14_inout`` → ``gazelle_dinov2_vitl14_inout`` (get_gt360_model).
+        suffix = arch.replace("gt360_", "")
+        base["name"] = f"gazelle_dinov2_{suffix}"
     elif arch == "gazemoe_vitl14_inout":
         base["name"] = "gazemoe_dinov2_vitl14_inout"
     #elif arch == "gt3d_vitl14_inout":
@@ -652,6 +666,7 @@ def build_model(arch: str, checkpoint: Optional[str],
 
     Architectures handled here:
         gazelle_*          → network/network_builder.get_gazelle_model
+        gt360_*            → network/network_builder_update2.get_gt360_model
         gazemoe_vitl14_inout → network/network_builder_update2.get_gazemoe_model
         gt3d_vitl14_inout  → network/network_builder_gt3d.get_gt3d_model
         chong              → network/network_builder_chong.get_chong_model
@@ -665,6 +680,10 @@ def build_model(arch: str, checkpoint: Optional[str],
     if arch.startswith("gazelle"):
         from network.network_builder import get_gazelle_model
         model, transform = get_gazelle_model(cfg)
+        predict_fn = _predict_gazelle_style
+    elif arch.startswith("gt360"):
+        from network.network_builder_update2 import get_gt360_model
+        model, transform = get_gt360_model(cfg)
         predict_fn = _predict_gazelle_style
     elif arch == "gazemoe_vitl14_inout":
         from network.network_builder_update2 import get_gazemoe_model
