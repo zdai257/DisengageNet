@@ -1,7 +1,7 @@
 # General Configuration
 model:
   name: "gazemoe_dinov2_vitl14_inout"  # gazemoe_dinov2_vit{b14,l14}{,_inout} | gt3d_dinov2_vit{b14,l14}{,_inout}
-  pretrained_path: "pretrainMoE_MSF1_best.pt"  # warm-start from SoTA GazeMoE; "" → from scratch
+  pretrained_path: "gazemoe_gt3d_gf.pt"  # "pretrainMoE_MSF1_best.pt" or "gazemoe_gt3d_gf.pt" or ; "" → from scratch
   mlp_ratio: 1  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size [1, 2, 4]
   num_experts: 4  # Routed experts [3, 4, 6]
   num_shared_experts: 1  # Shared experts [1, 2]
@@ -11,7 +11,7 @@ model:
   is_focal_loss: 1  # if using FocalLoss for class balancing
   pbce_loss: "bce"  #"mse" or "bce" or "hybrid"
   reduction: "mean"  #"mean" or "none"
-  bce_weight: 0.0  # 0.1 for ChildPlay; disable for GOO(?) and GazeFollow
+  bce_weight: 1.0  # 0.1 for ChildPlay; disable for GOO(?) and GazeFollow
   mse_weight: 1.0
   depth_weight: 0.5  # Legacy fallback if depth_weight_start omitted
   depth_weight_start: 0.5  # GazeFollow pretrain: linear schedule → depth_weight_end
@@ -74,16 +74,16 @@ data:
 train:
   # VAT finetuning hyperparams
   batch_size: 60                    # Batch size for training
-  epochs: 15                    # Number of training epochs
-  # 0.00001 for VAt; 0.0001 for ChildPlay 
-  lr: 0.001                         # heatmap_head, refined_heatmap_head, pos_embed
+  epochs: 8                    # Number of finetuning epochs
+  # 0.00001 for VAT; 0.0001 for ChildPlay 
+  lr: 0.00001                         # heatmap_head, refined_heatmap_head, pos_embed
   inout_lr: 0.001
-  depth_lr: 0.0003                  # GT3D: ≈ lr/3 to taper depth pressure on the shared trunk
-  fuse_lr: 0.001
-  block_lr: 0.001
+  depth_lr: 0.00001                  
+  fuse_lr: 0.00001
+  block_lr: 0.00001
   layer_decay: 0                    # 0 or 1
-  optimizer: "Adam"                # Optimizer type (adam, adamw, sgd, etc.)
-  weight_decay: 0.0                # Weight decay for optimizer
+  optimizer: "AdamW"                # Optimizer type (adam, adamw, sgd, etc.)
+  weight_decay: 0.01                # Weight decay for optimizer
   lr_scheduler:                     # Learning rate scheduler settings
     type: "cosine"                  # cosine / linear / warmup (for warmup training)
     step_size: 15                   # Step size for step scheduler / warmup: warmup_epochs
@@ -119,8 +119,8 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/gazemoe_gt3d/"                        # auto naming for GT3D finetune
-  pre_dir: "results/pretrain_gazemoeFT_gt3d-goosynth/"   # depth-aware GazeFollow pretrain
+  log_dir: "results/gazemoe_gt3d-vat/"                        # auto naming for GT3D finetune
+  pre_dir: "results/pretrain_gazemoeFT_gt3d-vat/"   # depth-aware GazeFollow pretrain
   save_every: 5
 
 hardware:

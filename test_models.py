@@ -129,6 +129,9 @@ def parse_args() -> argparse.Namespace:
                    help="If a depth file is missing, run DepthAnythingV2 at "
                         "runtime instead of skipping the 3-D metrics.  "
                         "Auto-enabled when --depth_dir is empty / 'none' / 'off'.")
+    p.add_argument("--no_depth", action="store_true",
+                   help="Completely skip depth lookup AND on-the-fly DA2: only "
+                        "2-D metrics (AUC, AvgL2) + optional AP are reported.")
     p.add_argument("--da2_encoder", choices=["vits", "vitb", "vitl"],
                    default="vitb",
                    help="DepthAnythingV2 backbone 'base' for on-the-fly depth.")
@@ -147,6 +150,14 @@ def parse_args() -> argparse.Namespace:
                         "(useful for quick smoke runs).  0 = no cap.")
     p.add_argument("--out", type=str, default=None,
                    help="Optional path to write a JSON report.")
+    # ---- Reproduction-specific knobs (vendored upstream repos) ----
+    p.add_argument("--upstream_root", type=str, default=None,
+                   help="For reproduction models (sharingan / gatector): path "
+                        "to the vendored upstream checkout.  Defaults to "
+                        "'../sharingan' or '../GaTector-A-Unified-Framework-"
+                        "for-Gaze-Object-Prediction' per builder.")
+    p.add_argument("--gatector_input_size", type=int, default=224,
+                   help="GaTector scene/head input resolution (default 224).")
     return p.parse_args()
 
 
@@ -191,20 +202,63 @@ def _resolve_depth_path(data_root: str, image_rel_path: str,
     return os.path.join(data_root, rel)
 
 
-def _gazefollow_preprocessed_to_samples(json_path: str, data_root: str,
-                                         depth_dir: str) -> List[Dict[str, Any]]:
-    """Adapter for GazeFollow / VAT / ChildPlay preprocessed JSONs that follow
-    the ``frames[*].heads[*]`` schema.
+def _emit_head_sample(path: str, head: Dict[str, Any], w: int, h: int,
+                       data_root: str, depth_dir: str) -> Dict[str, Any]:
+    return {
+        "path":       path,
+        "bbox_norm":  list(head["bbox_norm"]),
+        "gazex_norm": list(head.get("gazex_norm", [])),
+        "gazey_norm": list(head.get("gazey_norm", [])),
+        "inout":      int(head.get("inout", 1)),
+        "width":      int(w),
+        "height":     int(h),
+        "depth_path": _resolve_depth_path(data_root, path, depth_dir),
+    }
+
+
+def _preprocessed_json_to_samples(json_path: str, data_root: str,
+                                   depth_dir: str) -> List[Dict[str, Any]]:
+    """Adapter for the preprocessed JSON formats used in this repo.
+
+    Two schemas are auto-detected:
+
+    1. **Flat (GazeFollow / GOO)**: top-level list of *images*, each
+       with ``path`` + ``heads[*]`` and an image-level ``width / height``
+       (or we PIL-open to recover it).
+    2. **Nested (VAT)**: top-level list of *clips*, each with
+       clip-level ``path``, ``width``, ``height`` and a nested
+       ``frames[*]`` list; per-frame ``path`` + ``heads[*]``.
 
     Multi-head frames are flattened into one sample per head; out-of-frame
-    heads are kept (we still evaluate inout AP on them) but excluded from
-    spatial metrics during the eval loop.
+    heads are kept (so AP can still be computed) but excluded from spatial
+    metrics in the eval loop.
     """
     with open(json_path, "r") as f:
         frames = json.load(f)
 
     samples: List[Dict[str, Any]] = []
     for frm in frames:
+        # Nested (VAT) schema: clip with its own width/height + frames[].
+        if "frames" in frm and isinstance(frm["frames"], list):
+            w = int(frm.get("width", 0))
+            h = int(frm.get("height", 0))
+            for sub in frm["frames"]:
+                spath = sub.get("path", "")
+                if not spath:
+                    continue
+                ww, hh = w, h
+                if ww <= 0 or hh <= 0:
+                    try:
+                        with Image.open(os.path.join(data_root, spath)) as im:
+                            ww, hh = im.size
+                    except (OSError, FileNotFoundError):
+                        ww, hh = ww or 0, hh or 0
+                for head in sub.get("heads", []):
+                    samples.append(_emit_head_sample(
+                        spath, head, ww, hh, data_root, depth_dir))
+            continue
+
+        # Flat (GazeFollow / GOO) schema.
         path = frm["path"]
         try:
             with Image.open(os.path.join(data_root, path)) as im:
@@ -212,18 +266,129 @@ def _gazefollow_preprocessed_to_samples(json_path: str, data_root: str,
         except (OSError, FileNotFoundError):
             w = frm.get("width",  0)
             h = frm.get("height", 0)
-        heads = frm.get("heads", [])
-        for head in heads:
-            samples.append({
-                "path":       path,
-                "bbox_norm":  list(head["bbox_norm"]),
-                "gazex_norm": list(head.get("gazex_norm", [])),
-                "gazey_norm": list(head.get("gazey_norm", [])),
-                "inout":      int(head.get("inout", 1)),
-                "width":      int(w),
-                "height":     int(h),
-                "depth_path": _resolve_depth_path(data_root, path, depth_dir),
-            })
+        for head in frm.get("heads", []):
+            samples.append(_emit_head_sample(
+                path, head, w, h, data_root, depth_dir))
+    return samples
+
+
+_CHILDPLAY_RES_MAP = {
+    "360p":  (640,  360),
+    "480p":  (854,  480),
+    "720p":  (1280, 720),
+    "1080p": (1920, 1080),
+    "1440p": (2560, 1440),
+    "2160p": (3840, 2160),
+    "4k":    (3840, 2160),
+}
+
+
+def _childplay_csv_to_samples(data_root: str, split: str,
+                               depth_dir: str) -> List[Dict[str, Any]]:
+    """Load ChildPlay's per-clip CSV annotations directly (no preprocessed
+    JSON required).
+
+    Expected layout::
+
+        <data_root>/clips.csv                                  (clip,...,resolution)
+        <data_root>/annotations/<split>/<clip>.csv             (per-frame rows)
+        <data_root>/images/<clip>/<video_id>_<abs_frame>.jpg   (downscaled images)
+
+    Note: the annotation CSVs encode bbox / gaze coordinates in the *native*
+    video resolution (read from ``clips.csv``'s ``resolution`` column),
+    NOT the on-disk image size — the images are usually downscaled.  We
+    therefore normalise by the native (W, H) so that bbox_norm / gaze_norm
+    stay in [0, 1].
+
+    Row columns: clip, frame, person_id, bbox_x, bbox_y, bbox_width,
+    bbox_height, gaze_class, gaze_x, gaze_y, is_child.
+    ``frame`` is 1-indexed within the clip; absolute frame number in the
+    image filename is ``<clip-start> + frame - 1``.
+    """
+    import csv
+
+    ann_dir = os.path.join(data_root, "annotations", split)
+    if not os.path.isdir(ann_dir):
+        raise FileNotFoundError(
+            f"ChildPlay annotations dir not found: {ann_dir}")
+
+    # ---- Map each clip → native (W, H) from clips.csv's resolution col --
+    clips_csv_path = os.path.join(data_root, "clips.csv")
+    clip_wh: Dict[str, tuple] = {}
+    if os.path.isfile(clips_csv_path):
+        with open(clips_csv_path) as f:
+            for row in csv.DictReader(f):
+                res = (row.get("resolution") or "").strip().lower()
+                wh = _CHILDPLAY_RES_MAP.get(res)
+                if wh is not None:
+                    clip_wh[row["clip"]] = wh
+
+    samples: List[Dict[str, Any]] = []
+    # Fall back to PIL-opening the first frame if clips.csv didn't cover
+    # the clip; the resulting dims will be the downscaled image's, which
+    # works as long as the annotations are also in that frame.
+    _img_size_cache: Dict[str, tuple] = {}
+
+    for csv_name in sorted(os.listdir(ann_dir)):
+        if not csv_name.endswith(".csv"):
+            continue
+        clip = csv_name[:-4]
+        try:
+            stem, frange = clip.rsplit("_", 1)
+            start = int(frange.split("-")[0])
+        except (ValueError, IndexError):
+            stem, start = clip, 0
+
+        with open(os.path.join(ann_dir, csv_name)) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    rel_frame = int(row["frame"])
+                except (KeyError, ValueError):
+                    continue
+                abs_frame = start + rel_frame - 1
+                img_rel = os.path.join("images", clip,
+                                        f"{stem}_{abs_frame}.jpg")
+
+                w, h = clip_wh.get(clip, (0, 0))
+                if w <= 0 or h <= 0:
+                    if clip not in _img_size_cache:
+                        try:
+                            with Image.open(os.path.join(data_root, img_rel)) as im:
+                                _img_size_cache[clip] = im.size
+                        except (OSError, FileNotFoundError):
+                            _img_size_cache[clip] = (0, 0)
+                    w, h = _img_size_cache[clip]
+                if w <= 0 or h <= 0:
+                    continue
+
+                try:
+                    bx = float(row["bbox_x"]);     by = float(row["bbox_y"])
+                    bw = float(row["bbox_width"]); bh = float(row["bbox_height"])
+                    gx = float(row["gaze_x"]);     gy = float(row["gaze_y"])
+                except (KeyError, ValueError):
+                    continue
+                x1, y1 = bx, by
+                x2, y2 = bx + bw, by + bh
+                bbox_norm = [
+                    max(0.0, min(1.0, x1 / w)),
+                    max(0.0, min(1.0, y1 / h)),
+                    max(0.0, min(1.0, x2 / w)),
+                    max(0.0, min(1.0, y2 / h)),
+                ]
+
+                gaze_class = row.get("gaze_class", "").lower()
+                inout = 1 if (gaze_class == "inside_visible" and gx >= 0) else 0
+
+                head = {
+                    "bbox_norm":  bbox_norm,
+                    "gazex_norm": [max(0.0, min(1.0, gx / w))] if inout == 1 else [],
+                    "gazey_norm": [max(0.0, min(1.0, gy / h))] if inout == 1 else [],
+                    "inout":      inout,
+                }
+                samples.append(_emit_head_sample(
+                    img_rel, head, w, h, data_root, depth_dir))
+
     return samples
 
 
@@ -231,7 +396,19 @@ def load_dataset_samples(dataset: str, data_root: str, depth_dir: str,
                           split_file: Optional[str] = None) -> List[Dict[str, Any]]:
     """Resolve the annotations file for the requested dataset and return a
     flat list of evaluation samples.
+
+    ChildPlay's official release ships per-clip CSV annotations rather than
+    a single preprocessed JSON; we read those directly under
+    ``<data_root>/annotations/test/<clip>.csv`` unless a ``--split_file``
+    override is supplied.
     """
+    if dataset == "childplay" and split_file is None:
+        # Default to the raw upstream layout (annotations/test/*.csv).
+        if not os.path.isfile(os.path.join(data_root, "test_preprocessed.json")):
+            return _childplay_csv_to_samples(data_root, "test", depth_dir)
+        # If a preprocessed JSON happens to exist next to the upstream
+        # files, fall through to use it.
+
     if split_file is None:
         defaults = {
             "gazefollow": "test_preprocessed.json",
@@ -246,7 +423,7 @@ def load_dataset_samples(dataset: str, data_root: str, depth_dir: str,
     if not os.path.isfile(json_path):
         raise FileNotFoundError(
             f"Annotations not found: {json_path}.  Pass --split_file to override.")
-    return _gazefollow_preprocessed_to_samples(json_path, data_root, depth_dir)
+    return _preprocessed_json_to_samples(json_path, data_root, depth_dir)
 
 
 # ============================================================================
@@ -457,7 +634,9 @@ def _make_minimal_config(arch: str) -> Dict[str, Any]:
 
 
 def build_model(arch: str, checkpoint: Optional[str],
-                device: torch.device, include_backbone: bool = False
+                device: torch.device, include_backbone: bool = False,
+                upstream_root: Optional[str] = None,
+                gatector_input_size: int = 224,
                 ) -> ModelHandle:
     """Build the model + transform for the requested arch and load weights.
 
@@ -495,20 +674,31 @@ def build_model(arch: str, checkpoint: Optional[str],
         predict_fn = _predict_reproduction
     elif arch == "sharingan":
         from network.network_builder_sharingan import get_sharingan_model
-        model, transform = get_sharingan_model()
+        kw: Dict[str, Any] = {}
+        if upstream_root:
+            kw["upstream_root"] = upstream_root
+        if checkpoint:
+            kw["ckpt_path"] = checkpoint
+        model, transform = get_sharingan_model(**kw)
         predict_fn = _predict_reproduction
+        checkpoint = None      # factory has already loaded the ckpt
     elif arch == "gatector":
         from network.network_builder_gatector import get_gatector_model
-        model, transform = get_gatector_model()
+        kw = {"input_size": gatector_input_size}
+        if upstream_root:
+            kw["upstream_root"] = upstream_root
+        if checkpoint:
+            kw["ckpt_path"] = checkpoint
+        model, transform = get_gatector_model(**kw)
         predict_fn = _predict_reproduction
+        checkpoint = None      # factory has already loaded the ckpt
     else:
         raise ValueError(f"Unknown arch: {arch}")
 
-    # Load checkpoint if provided.
+    # Generic loader for arches where the factory didn't already load the
+    # checkpoint (in-house Gazelle / GazeMoE / GT3D, plus Chong / DAM).
     if checkpoint and os.path.isfile(checkpoint):
         sd = torch.load(checkpoint, map_location="cpu", weights_only=True)
-        # In-house models have ``load_gazelle_state_dict``; reproductions
-        # just use ``load_state_dict``.
         if hasattr(model, "load_gazelle_state_dict"):
             model.load_gazelle_state_dict(sd, include_backbone=include_backbone)
         else:
@@ -618,16 +808,32 @@ def _per_sample_eval(heatmap_np: np.ndarray, sample: Dict[str, Any],
         return
 
     # --- 2-D ----------
+    # Wrap AUC/L2 in a guard: degenerate annotations (e.g. ChildPlay
+    # frames with gaze clipped to the image border) can collapse the
+    # tolerance rectangle and trip ``roc_auc_score`` with a
+    # "Only one class present in y_true" ValueError.  Skip the sample's
+    # AUC contribution in that case; the L2 (argmax-based) still works.
+    hm_t = torch.from_numpy(heatmap_np).float()
     if dataset in {"gazefollow", "goosynth", "gooreal"}:
-        hm_t = torch.from_numpy(heatmap_np).float()
-        sink.aucs.append(gazefollow_auc(hm_t, gazex, gazey,
-                                         sample["height"], sample["width"]))
-        avg_l2, _ = gazefollow_l2(hm_t, gazex, gazey)
-        sink.avg_l2s.append(avg_l2)
+        try:
+            sink.aucs.append(gazefollow_auc(
+                hm_t, gazex, gazey, sample["height"], sample["width"]))
+        except ValueError:
+            pass
+        try:
+            avg_l2, _ = gazefollow_l2(hm_t, gazex, gazey)
+            sink.avg_l2s.append(avg_l2)
+        except (ValueError, IndexError):
+            pass
     else:  # vat / childplay — rectangular AUC, single-annotator L2
-        hm_t = torch.from_numpy(heatmap_np).float()
-        sink.aucs.append(vat_auc(hm_t, gazex[0], gazey[0]))
-        sink.avg_l2s.append(vat_l2(hm_t, gazex[0], gazey[0]))
+        try:
+            sink.aucs.append(vat_auc(hm_t, gazex[0], gazey[0]))
+        except ValueError:
+            pass
+        try:
+            sink.avg_l2s.append(vat_l2(hm_t, gazex[0], gazey[0]))
+        except (ValueError, IndexError):
+            pass
 
     # --- 3-D ----------
     if depth_norm is None:
@@ -757,7 +963,14 @@ def main():
     #    explanation if on-the-fly was not requested explicitly).
     cache_disabled = _depth_cache_disabled(args.depth_dir)
     depth_on_the_fly = bool(args.depth_on_the_fly)
-    if cache_disabled and not depth_on_the_fly:
+    if args.no_depth:
+        depth_on_the_fly = False
+        cache_disabled   = True
+        for s in samples:
+            s["depth_path"] = None
+        print("[depth] --no_depth set ⇒ skipping all depth lookup/inference "
+              "(3-D metrics will report 'n/a').")
+    elif cache_disabled and not depth_on_the_fly:
         depth_on_the_fly = True
         print("[depth] --depth_dir is empty/none/off ⇒ "
               "auto-enabling on-the-fly DepthAnythingV2 inference.")
@@ -795,6 +1008,8 @@ def main():
     handle = build_model(
         arch=args.arch, checkpoint=args.checkpoint,
         device=device, include_backbone=args.include_backbone,
+        upstream_root=args.upstream_root,
+        gatector_input_size=args.gatector_input_size,
     )
 
     # ---- Eval -----

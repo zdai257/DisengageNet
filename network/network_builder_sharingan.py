@@ -8,47 +8,44 @@ Builder + thin uniform-interface wrapper for
     "Sharingan: A Transformer Architecture for Multi-Person Gaze Following."
     CVPR 2024.   https://github.com/idiap/sharingan
 
-The Sharingan architecture is a multi-person Transformer that wraps a
-MultiMAE-pretrained ViT scene encoder with a per-head token-injection
-pipeline and a Gaze360-style auxiliary gaze-direction encoder.  Faithfully
-reimplementing the full model from scratch (encoder + gaze tokens +
-contrastive aux loss + dataset-specific configurations) is non-trivial
-and out of scope for an in-house quick-reproduction file, so this builder
-follows a **vendoring pattern**:
+Wiring
+------
+The upstream repo is expected at ``../sharingan`` (containing the ``src/``
+package).  The released checkpoints (Lightning state dicts) sit at
+``./sharingan/checkpoints/{gazefollow,videoattentiontarget,childplay}.pt``
+and were trained with the model kwargs of ``src/conf/config_*.yaml``:
 
-    1. Clone the upstream repo as a sibling checkout::
+    patch_size=16, token_dim=768, image_size=224, heatmap_size=64,
+    gaze_feature_dim=512,
+    encoder_depth=12, encoder_num_heads=12, encoder_num_global_tokens=0,
+    encoder_mlp_ratio=4.0, encoder_use_qkv_bias=True,
+    encoder_drop_rate=0.0, encoder_attn_drop_rate=0.0,
+    encoder_drop_path_rate=0.0,
+    decoder_feature_dim=128, decoder_hooks=[2, 5, 8, 11],
+    decoder_hidden_dims=[48, 96, 192, 384], decoder_use_bn=True
 
-           cd ..
-           git clone https://github.com/idiap/sharingan.git
-           cd DisengageNet
-           ln -s ../sharingan/src vendor/sharingan_src    # optional convenience
+Forward contract (upstream)
+    Input:   ``{"image": [B, 3, 224, 224],
+                 "heads": [B, N, 3, 224, 224],
+                 "head_bboxes": [B, N, 4]   (normalised xyxy)}``
+    Returns: ``(gaze_vec, gaze_hm, inout)``
+      * ``gaze_hm  : [B, N, 64, 64]`` — raw (un-sigmoided) gaze heatmap
+      * ``inout    : [B, N, 1]``      — raw in/out logit
+      * Target person is **last** along N (per the training step).
 
-    2. Place the pretrained weights as instructed by the upstream README
-       under ``vendor/sharingan_weights/`` (or pass the paths via the
-       factory).
-
-    3. The :func:`get_sharingan_model` factory below imports the upstream
-       ``LightningModule`` (or the raw ``nn.Module`` underneath it) and
-       wraps it with a ``SharinganWrapper`` that exposes the
-       ``forward_eval`` interface required by ``test_models.py``.
-
-If the upstream code is not present, the factory raises a clear
-ImportError with the instructions above — preferred over silently
-producing wrong numbers from a partial reimplementation.
-
-Public API:
-    get_sharingan_model(
-        upstream_src_root: str = "../sharingan/src",
-        ckpt_path: str | None  = None,
-        config_name: str       = "config_gf",
-    ) -> (model, transform)
+For our per-head eval flow we feed N=1 and read index 0.  Released ckpts
+are Lightning snapshots with keys prefixed ``model.`` (we strip that).
+The upstream pulls in training-only deps (pytorch_lightning, wandb,
+transformers, termcolor); we stub those at import time so the wrapper
+runs in a lean inference env.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-from typing import Any, Callable, Dict, List
+import types
+from typing import Any, Callable, Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -57,24 +54,129 @@ from PIL import Image
 from torchvision import transforms as T
 
 
-class SharinganWrapper(nn.Module):
-    """Adapter that exposes the upstream Sharingan model under the same
-    ``forward_eval`` contract used by ``test_models.py``.
+# ---------------------------------------------------------------------------
+# 1.  Constants — match upstream config_{gf,vat,cp}.yaml
+# ---------------------------------------------------------------------------
 
-    The Sharingan forward signature differs from the in-house and
-    Chong-style models: it consumes multi-person head crops + head
-    bounding boxes plus the scene image, and returns one heatmap per head.
-    For our single-head-per-sample eval flow we feed a singleton head
-    list per image; the wrapper unpacks the first head's prediction.
+SHARINGAN_KWARGS: Dict[str, Any] = {
+    "patch_size": 16,
+    "token_dim": 768,
+    "image_size": 224,
+    "heatmap_size": 64,
+    "gaze_feature_dim": 512,
+    "encoder_depth": 12,
+    "encoder_num_heads": 12,
+    "encoder_num_global_tokens": 0,
+    "encoder_mlp_ratio": 4.0,
+    "encoder_use_qkv_bias": True,
+    "encoder_drop_rate": 0.0,
+    "encoder_attn_drop_rate": 0.0,
+    "encoder_drop_path_rate": 0.0,
+    "decoder_feature_dim": 128,
+    "decoder_hooks": [2, 5, 8, 11],
+    "decoder_hidden_dims": [48, 96, 192, 384],
+    "decoder_use_bn": True,
+}
+
+# Image / head normalisation stats (from src/datasets/{gazefollow,vat,cp}.py).
+IMG_MEAN = [0.44232, 0.40506, 0.36457]
+IMG_STD  = [0.28674, 0.27776, 0.27995]
+
+
+# ---------------------------------------------------------------------------
+# 2.  Training-only stubs (Lightning, wandb, transformers, termcolor) so
+#     importing the upstream module does NOT require those packages.
+# ---------------------------------------------------------------------------
+
+def _install_sharingan_import_stubs() -> None:
+    if "pytorch_lightning" not in sys.modules:
+        pl = types.ModuleType("pytorch_lightning")
+        pl.LightningModule = type("LightningModule", (nn.Module,), {})
+        sys.modules["pytorch_lightning"] = pl
+    if "wandb" not in sys.modules:
+        wb = types.ModuleType("wandb")
+        wb.log = lambda *a, **k: None
+        wb.define_metric = lambda *a, **k: None
+        wb.Image = lambda *a, **k: None
+        wb.Histogram = lambda *a, **k: None
+        sys.modules["wandb"] = wb
+    if "transformers" not in sys.modules:
+        tr = types.ModuleType("transformers")
+        tr.get_cosine_schedule_with_warmup = lambda *a, **k: None
+        sys.modules["transformers"] = tr
+    if "termcolor" not in sys.modules:
+        tc = types.ModuleType("termcolor")
+        tc.colored = lambda s, *a, **k: s
+        sys.modules["termcolor"] = tc
+
+
+# ---------------------------------------------------------------------------
+# 3.  Wrapper — exposes the ``forward_eval(images, samples, transform,
+#                                          device)`` contract.
+# ---------------------------------------------------------------------------
+
+class SharinganWrapper(nn.Module):
+    """Adapter around the upstream Sharingan model.
+
+    The upstream model consumes:
+        * a 224×224 scene image,
+        * one or more 224×224 head crops + their normalised bboxes,
+    and returns ``(gaze_vec, gaze_hm, inout)`` with the target person at
+    the last index along the N axis.  We pass a single head per sample
+    (N=1) and read index 0.
     """
 
     def __init__(self, upstream_model: nn.Module,
-                 head_input_size: int = 224,
-                 scene_input_size: int = 384):
+                  expand_k: float = 0.1, image_size: int = 224):
         super().__init__()
         self.model = upstream_model
-        self.head_input_size  = head_input_size
-        self.scene_input_size = scene_input_size
+        self.expand_k = expand_k
+        self.image_size = image_size
+
+        # Head pre-processing: resize → tensor → Sharingan normalise.
+        self._head_tf = T.Compose([
+            T.Resize((image_size, image_size), antialias=True),
+            T.ToTensor(),
+            T.Normalize(mean=IMG_MEAN, std=IMG_STD),
+        ])
+
+    # --- bbox helpers (ported from sharingan/src/utils/common.py) ---------
+    @staticmethod
+    def _expand_bbox(bbox_pix: torch.Tensor, img_w: int, img_h: int,
+                      k: float = 0.1) -> torch.Tensor:
+        x1, y1, x2, y2 = bbox_pix
+        bw, bh = x2 - x1, y2 - y1
+        ex, ey = k * bw, k * bh
+        return torch.tensor([
+            max(0.0,            float(x1 - ex / 2.0)),
+            max(0.0,            float(y1 - ey / 2.0)),
+            min(float(img_w),   float(x2 + ex / 2.0)),
+            min(float(img_h),   float(y2 + ey / 2.0)),
+        ])
+
+    @staticmethod
+    def _square_bbox(bbox_pix: torch.Tensor, img_w: int, img_h: int
+                      ) -> torch.Tensor:
+        x1, y1, x2, y2 = bbox_pix
+        bw, bh = x2 - x1, y2 - y1
+        side = float(max(bw, bh))
+        cx, cy = float((x1 + x2) / 2.0), float((y1 + y2) / 2.0)
+        nx1 = cx - side / 2.0
+        ny1 = cy - side / 2.0
+        nx2 = cx + side / 2.0
+        ny2 = cy + side / 2.0
+        # Recenter inside the image frame if the square pokes out.
+        if nx1 < 0:
+            nx2 -= nx1; nx1 = 0.0
+        if ny1 < 0:
+            ny2 -= ny1; ny1 = 0.0
+        if nx2 > img_w:
+            nx1 -= (nx2 - img_w); nx2 = float(img_w)
+        if ny2 > img_h:
+            ny1 -= (ny2 - img_h); ny2 = float(img_h)
+        return torch.tensor([max(0.0, nx1), max(0.0, ny1),
+                              min(float(img_w), nx2),
+                              min(float(img_h), ny2)])
 
     # --------------------------------------------------------------------
     @torch.no_grad()
@@ -82,127 +184,109 @@ class SharinganWrapper(nn.Module):
                       samples: List[Dict[str, Any]],
                       transform: Callable, device: torch.device
                       ) -> Dict[str, torch.Tensor]:
-        # Build scene tensor.
+        # Scene tensor — the ``transform`` from the factory already does
+        # 224×224 + Sharingan-normalised mean/std.
         scene_t = torch.stack([transform(im) for im in images]).to(device)
 
-        # Per-image head crops resized to head_input_size.
-        head_tf = T.Compose([
-            T.Resize((self.head_input_size, self.head_input_size)),
-            T.ToTensor(),
-            T.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225]),
-        ])
-        head_imgs:  List[torch.Tensor] = []
-        head_boxes: List[torch.Tensor] = []
+        head_imgs:    List[torch.Tensor] = []
+        head_bboxes:  List[torch.Tensor] = []
         for im, s in zip(images, samples):
             w, h = im.size
             b = s["bbox_norm"]
-            x1, y1 = int(round(b[0] * w)), int(round(b[1] * h))
-            x2, y2 = int(round(b[2] * w)), int(round(b[3] * h))
-            x1, x2 = sorted((max(0, x1), min(w, x2)))
-            y1, y2 = sorted((max(0, y1), min(h, y2)))
-            crop = im.crop((x1, y1, x2, y2)) if (x2 > x1 and y2 > y1) else im
-            head_imgs.append(head_tf(crop))
-            head_boxes.append(torch.tensor(b, dtype=torch.float32))
-        # Singleton head per image: [B, N=1, ...]
-        heads_t = torch.stack(head_imgs).unsqueeze(1).to(device)         # [B, 1, 3, Hh, Wh]
-        boxes_t = torch.stack(head_boxes).unsqueeze(1).to(device)         # [B, 1, 4]
+            bp = torch.tensor([b[0] * w, b[1] * h, b[2] * w, b[3] * h],
+                              dtype=torch.float32)
+            bp = self._expand_bbox(bp, w, h, k=self.expand_k)
+            bp = self._square_bbox(bp, w, h)
+            x1, y1, x2, y2 = bp.tolist()
+            crop = im.crop((int(round(x1)), int(round(y1)),
+                            int(round(x2)), int(round(y2)))) \
+                   if (x2 > x1 + 1 and y2 > y1 + 1) else im
+            head_imgs.append(self._head_tf(crop))
+            # Normalise the (squared, expanded) bbox to [0, 1] for the model.
+            head_bboxes.append(torch.tensor([
+                x1 / w, y1 / h, x2 / w, y2 / h], dtype=torch.float32
+            ).clamp_(0.0, 1.0))
 
-        # The upstream model's exact forward signature depends on the
-        # vendored release; we expect a dict / tuple return.  Try the
-        # most common shapes in turn.
-        out = None
-        for kwargs in (
-            {"scene": scene_t, "heads": heads_t, "head_boxes": boxes_t},
-            {"image": scene_t, "head_imgs": heads_t, "head_bboxes": boxes_t},
-            {"x": scene_t,     "heads_x": heads_t, "boxes": boxes_t},
-        ):
-            try:
-                out = self.model(**kwargs)
-                break
-            except TypeError:
-                continue
-        if out is None:
-            raise RuntimeError(
-                "Could not call the upstream Sharingan model with any of the "
-                "expected keyword arrangements.  Please adapt the SharinganWrapper "
-                "to match your vendored Sharingan release.")
+        # [B, N=1, 3, 224, 224] and [B, N=1, 4].
+        heads_t  = torch.stack(head_imgs).unsqueeze(1).to(device)
+        bboxes_t = torch.stack(head_bboxes).unsqueeze(1).to(device)
 
-        if isinstance(out, dict):
-            hm   = out.get("heatmap", out.get("heatmaps"))
-            inout = out.get("inout",  out.get("watching", None))
-        else:                                  # (heatmaps, inout) tuple
-            hm, inout = out
+        batch = {"image": scene_t, "heads": heads_t, "head_bboxes": bboxes_t}
+        gaze_vec, gaze_hm, inout = self.model(batch)
+        # gaze_hm: [B, N=1, 64, 64];  inout: [B, N=1, 1]  (raw logit).
 
-        if hm is None:
-            raise RuntimeError("Sharingan output did not include a heatmap.")
-        if hm.dim() == 5:                      # [B, N, 1, H, W]
-            hm = hm[:, 0, 0]
-        elif hm.dim() == 4:                    # [B, N, H, W]
-            hm = hm[:, 0]
-        if hm.shape[-1] != 64 or hm.shape[-2] != 64:
-            hm = F.interpolate(hm.unsqueeze(1), size=(64, 64),
-                                mode="bilinear", align_corners=False).squeeze(1)
-        hm = torch.sigmoid(hm) if (hm.min() < 0 or hm.max() > 1) else hm
-
-        if inout is None:
-            inout_t = torch.full((hm.shape[0],), float("nan"))
-        else:
-            if inout.dim() >= 2:
-                inout = inout[:, 0]
-            inout_t = torch.sigmoid(inout).view(-1).cpu().float()
+        hm = gaze_hm[:, -1].detach().float()           # target = last person
+        # Heatmap is raw (no sigmoid) but our 2-D metrics are rank-/argmax-
+        # based so the unbounded scale is fine.  Keep it as is.
+        inout_logit = inout[:, -1, 0].detach().float()
+        inout_t = torch.sigmoid(inout_logit).cpu()
         return {"heatmap": hm.cpu(), "inout": inout_t}
 
 
-# -----------------------------------------------------------------------------
-# Factory
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 4.  Factory
+# ---------------------------------------------------------------------------
+
+def _load_sharingan_state_dict(model: nn.Module, ckpt_path: str) -> None:
+    """Load the released Lightning ckpt into the raw ``Sharingan`` module.
+
+    The released files are ``{"pytorch-lightning_version": ...,
+    "state_dict": {"model.<...>": tensor, ...}}``; strip the ``model.``
+    prefix to align with the raw class.
+    """
+    blob = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    sd = blob.get("state_dict", blob) if isinstance(blob, dict) else blob
+    cleaned = {}
+    for k, v in sd.items():
+        nk = k[len("model."):] if k.startswith("model.") else k
+        cleaned[nk] = v
+    missing, unexpected = model.load_state_dict(cleaned, strict=False)
+    print(f"[sharingan] Loaded {ckpt_path}  "
+          f"missing={len(missing)}  unexpected={len(unexpected)}")
+    if missing and len(missing) <= 8:
+        print(f"[sharingan]   missing: {missing}")
+    if unexpected and len(unexpected) <= 8:
+        print(f"[sharingan]   unexpected: {unexpected}")
+
 
 def get_sharingan_model(
-    upstream_src_root: str = "../sharingan/src",
-    ckpt_path: str | None = None,
-    config_name: str = "config_gf",
+    upstream_root: str = "../sharingan",
+    ckpt_path: Optional[str] = None,
 ):
-    """Return ``(SharinganWrapper, transform)``.
+    """Return ``(SharinganWrapper, transform)`` wired to the official
+    upstream release at ``upstream_root`` (e.g. ``../sharingan``) using
+    the released-checkpoint constructor kwargs.
 
-    The upstream Sharingan repo is expected to be present at
-    ``upstream_src_root``.  We import its model module, then optionally
-    load a checkpoint at ``ckpt_path``.
+    The ``transform`` returned is the **scene-image** transform; the head
+    crop pipeline lives inside ``SharinganWrapper`` (it needs the original
+    PIL image to do bbox expansion + squaring before cropping).
     """
-    if not os.path.isdir(upstream_src_root):
+    if not os.path.isdir(upstream_root):
         raise ImportError(
-            "Sharingan upstream code not found at "
-            f"'{upstream_src_root}'.  Clone https://github.com/idiap/sharingan "
-            "as a sibling of this repo (or pass `upstream_src_root=...`) "
-            "and download the pretrained weights as the README instructs."
-        )
-    sys.path.insert(0, upstream_src_root)
+            f"Sharingan upstream code not found at '{upstream_root}'.  "
+            "Clone https://github.com/idiap/sharingan as a sibling of this "
+            "repo (or pass `upstream_root=<path-to-clone>`).")
 
-    try:
-        # Upstream layout: ``src/model.py`` defines ``Sharingan(nn.Module)``,
-        # ``src/litmodel.py`` wraps it in a LightningModule.  We prefer the
-        # raw nn.Module to keep this builder framework-free.
-        from model import Sharingan  # type: ignore
-    except ImportError as e:
-        raise ImportError(
-            "Could not import the Sharingan model class from "
-            f"'{upstream_src_root}/model.py'.  The upstream module names "
-            f"may have changed; see {upstream_src_root}/README.md."
-        ) from e
+    _install_sharingan_import_stubs()
+    sys.path.insert(0, upstream_root)
+    from src.modeling.sharingan import Sharingan  # type: ignore
 
-    model = Sharingan()
+    model = Sharingan(**SHARINGAN_KWARGS)
+    print(f"[sharingan] Built Sharingan with config_gf/vat/cp kwargs  "
+          f"params={sum(p.numel() for p in model.parameters()):,}")
+
     if ckpt_path and os.path.isfile(ckpt_path):
-        sd = torch.load(ckpt_path, map_location="cpu")
-        # Strip a Lightning prefix if present.
-        if any(k.startswith("model.") for k in sd):
-            sd = {k.replace("model.", "", 1): v for k, v in sd.items()
-                   if k.startswith("model.")}
-        model.load_state_dict(sd, strict=False)
+        _load_sharingan_state_dict(model, ckpt_path)
+    elif ckpt_path:
+        print(f"[sharingan] WARNING ckpt_path '{ckpt_path}' not found — "
+              f"running with random-init weights.")
 
-    # Sharingan expects ImageNet-normalised 384×384 scene images by default.
-    transform = T.Compose([
-        T.Resize((384, 384)),
+    scene_transform = T.Compose([
+        T.Resize((SHARINGAN_KWARGS["image_size"],
+                  SHARINGAN_KWARGS["image_size"]), antialias=True),
         T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        T.Normalize(mean=IMG_MEAN, std=IMG_STD),
     ])
-    return SharinganWrapper(model), transform
+    return SharinganWrapper(model,
+                             image_size=SHARINGAN_KWARGS["image_size"]), \
+           scene_transform
