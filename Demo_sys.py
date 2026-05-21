@@ -265,7 +265,9 @@ class DemoSys():
 
 
 if __name__ == "__main__":
-    the_model = "vatMoE.pt"  #"vatMoE.pt" or "pretrainMoE_MSF1_best.pt" or "GF360MoE_epoch_7.pt"
+    #the_model = "vatMoE.pt"  #"vatMoE.pt" or "pretrainMoE_MSF1_best.pt" or "GF360MoE_epoch_7.pt"
+    the_model = "gazemoe_gt3d_gf.pt"
+
     demo = DemoSys(model_gt=the_model)
 
     #img_path = "data/WALIexample0.png"
@@ -288,7 +290,7 @@ if __name__ == "__main__":
     #img_path = "data/00000033.jpg"
     #img_path = "data/trump_demo.mp400001.jpg"
 
-    img_path = "data/0000867.jpg"
+    img_path = "data/00001684.jpg"
 
     ec_results, heatmap_results = demo.conditional_inference(img_path, threshold=1.001, imgname=img_path.split('/')[-1])
 
