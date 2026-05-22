@@ -85,23 +85,77 @@ def visualize_heatmap(pil_image, heatmap, bbox=None):
     return overlay_image
 
 def clip_line_to_bbox(x1, y1, x2, y2, xmin, ymin, xmax, ymax):
+    """Return the bbox-boundary point where the ray from (x1,y1) toward (x2,y2)
+    exits the rectangle [xmin,xmax]×[ymin,ymax].
+
+    If the target lies inside the box the center is returned (short in-box ray).
+    Replaces the old sequential edge rules which mis-placed the start on diagonals.
     """
-            Clips a line so that it starts from the bbox edge instead of the center.
-            Uses a simple bounding box clipping approach.
-    """
-    if x2 < xmin:  # Left edge
-        y1 = y1 + (y2 - y1) * (xmin - x1) / (x2 - x1)
-        x1 = xmin
-    elif x2 > xmax:  # Right edge
-        y1 = y1 + (y2 - y1) * (xmax - x1) / (x2 - x1)
-        x1 = xmax
-    if y2 < ymin:  # Top edge
-        x1 = x1 + (x2 - x1) * (ymin - y1) / (y2 - y1)
-        y1 = ymin
-    elif y2 > ymax:  # Bottom edge
-        x1 = x1 + (x2 - x1) * (ymax - y1) / (y2 - y1)
-        y1 = ymax
-    return int(x1), int(y1)
+    cx, cy = float(x1), float(y1)
+    tx, ty = float(x2), float(y2)
+    dx, dy = tx - cx, ty - cy
+
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return int(round(cx)), int(round(cy))
+
+    candidates = []
+    # Intersect the forward ray with each axis-aligned edge; keep hits with t ∈ (0, 1].
+    if abs(dx) > 1e-9:
+        for x_edge in (float(xmin), float(xmax)):
+            t = (x_edge - cx) / dx
+            if t <= 1e-9 or t > 1.0 + 1e-9:
+                continue
+            y = cy + t * dy
+            if ymin - 1e-6 <= y <= ymax + 1e-6:
+                candidates.append((t, x_edge, y))
+    if abs(dy) > 1e-9:
+        for y_edge in (float(ymin), float(ymax)):
+            t = (y_edge - cy) / dy
+            if t <= 1e-9 or t > 1.0 + 1e-9:
+                continue
+            x = cx + t * dx
+            if xmin - 1e-6 <= x <= xmax + 1e-6:
+                candidates.append((t, x, y_edge))
+
+    if not candidates:
+        return int(round(cx)), int(round(cy))
+
+    _, px, py = min(candidates, key=lambda c: c[0])
+    return int(round(px)), int(round(py))
+
+
+def heatmap_norm_to_pixel(nx, ny, width, height):
+    """Map heatmap normalised coords (x∈[0,1] by width, y∈[0,1] by height) to
+    pixel coords clamped to the image canvas."""
+    x = max(0.0, min(float(nx) * float(width), float(width - 1)))
+    y = max(0.0, min(float(ny) * float(height), float(height - 1)))
+    return x, y
+
+
+def _draw_gaze_ray(draw, bbox_norm, xy_px, width, height, color,
+                   dot_radius=5, line_width=3):
+    """Draw head bbox outline, gaze ray, and endpoint dot (``xy_px`` in pixels)."""
+    xmin, ymin, xmax, ymax = bbox_norm
+    x0, y0 = xmin * width, ymin * height
+    x1, y1 = xmax * width, ymax * height
+    draw.rectangle([x0, y0, x1, y1], outline=color, width=line_width)
+
+    if xy_px is None:
+        return
+
+    gx = max(0.0, min(float(xy_px[0]), float(width - 1)))
+    gy = max(0.0, min(float(xy_px[1]), float(height - 1)))
+
+    center_x = (x0 + x1) / 2.0
+    center_y = (y0 + y1) / 2.0
+    start_x, start_y = clip_line_to_bbox(
+        center_x, center_y, gx, gy, x0, y0, x1, y1)
+    draw.line([(start_x, start_y), (gx, gy)], fill=color, width=line_width)
+    draw.ellipse(
+        [(gx - dot_radius, gy - dot_radius),
+         (gx + dot_radius, gy + dot_radius)],
+        fill=color, outline=color,
+    )
 
 def visualize_heatmap2(pil_image, heatmap, bbox=None, xy=None, dilation_kernel=2, blur_radius=5, color="lime", transparent_bg=None):
     dot_radius = 5
@@ -143,25 +197,9 @@ def visualize_heatmap2(pil_image, heatmap, bbox=None, xy=None, dilation_kernel=2
 
     if bbox is not None:
         width, height = pil_image.size
-        xmin, ymin, xmax, ymax = bbox
         draw = ImageDraw.Draw(overlay_image)
-        draw.rectangle([xmin * width, ymin * height, xmax * width, ymax * height], outline=color, width=3)
-        if xy is not None:
-            center_x = int((xmin + xmax) / 2 * width)
-            center_y = int((ymin + ymax) / 2 * height)
-
-            # Compute clipped start point at the bbox boundary
-            start_x, start_y = clip_line_to_bbox(center_x, center_y, xy[0], xy[1],
-                                                 int(xmin * width), int(ymin * height), int(xmax * width), int(ymax * height))
-            # Draw the line from bbox center to gaze point
-            draw.line([(start_x, start_y), (xy[0], xy[1])], fill=color, width=3)
-
-            # Draw a dot at the gaze point
-            draw.ellipse(
-                [(xy[0] - dot_radius, xy[1] - dot_radius),
-                 (xy[0] + dot_radius, xy[1] + dot_radius)],
-                fill=color, outline=color
-            )
+        _draw_gaze_ray(draw, bbox, xy, width, height, color,
+                       dot_radius=dot_radius, line_width=3)
     return overlay_image
 
 def visualize_heatmap3(pil_image, heatmap, bbox=None, xy=None, dilation_kernel=2, blur_radius=5, color="lime", transparent_bg=None):
@@ -200,32 +238,15 @@ def visualize_heatmap3(pil_image, heatmap, bbox=None, xy=None, dilation_kernel=2
         alpha = (colormap[:, :, 2] < colormap[:, :, 0]) * 64  # Less blue -> more opacity at most 50%
         heatmap = Image.fromarray(np.dstack((rgba, alpha)).astype(np.uint8), "RGBA")
 
-    #overlay_image = Image.alpha_composite(pil_image.convert("RGBA"), heatmap)
     trans_overlay = Image.new("RGBA", pil_image.size, (0, 0, 0, 0))
+    trans_overlay = Image.alpha_composite(trans_overlay, heatmap)
 
     if bbox is not None:
         width, height = pil_image.size
-        xmin, ymin, xmax, ymax = bbox
         draw = ImageDraw.Draw(trans_overlay)
-        draw.rectangle([xmin * width, ymin * height, xmax * width, ymax * height], outline=color, width=3)
-        if xy is not None:
-            center_x = int((xmin + xmax) / 2 * width)
-            center_y = int((ymin + ymax) / 2 * height)
+        _draw_gaze_ray(draw, bbox, xy, width, height, color,
+                       dot_radius=dot_radius, line_width=3)
 
-            # Compute clipped start point at the bbox boundary
-            start_x, start_y = clip_line_to_bbox(center_x, center_y, xy[0], xy[1],
-                                                 int(xmin * width), int(ymin * height), int(xmax * width), int(ymax * height))
-            # Draw the line from bbox center to gaze point
-            draw.line([(start_x, start_y), (xy[0], xy[1])], fill=color, width=3)
-
-            # Draw a dot at the gaze point
-            draw.ellipse(
-                [(xy[0] - dot_radius, xy[1] - dot_radius),
-                 (xy[0] + dot_radius, xy[1] + dot_radius)],
-                fill=color, outline=color
-            )
-
-    trans_overlay = Image.alpha_composite(trans_overlay.convert("RGBA"), heatmap)
     return trans_overlay
 
 def stack_and_pad(tensor_list):

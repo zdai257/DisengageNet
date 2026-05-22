@@ -15,7 +15,7 @@ from network.network_builder import get_gazelle_model
 #from network.network_builder_update import get_gt360_model
 from network.network_builder_update2 import get_gt360_model, get_gazemoe_model
 from network.ec_network_builder import get_ec_model
-from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3
+from network.utils import visualize_heatmap, visualize_heatmap2, visualize_heatmap3, heatmap_norm_to_pixel
 import torch.profiler
 
 EC_THRES = 1.001
@@ -30,6 +30,31 @@ PREDICTOR_PATH = os.path.join(script_dir, "model", "shape_predictor_68_face_land
 if not os.path.isfile(PREDICTOR_PATH):
     print("[ERROR] USE models/downloader.sh to download the predictor")
     sys.exit()
+
+
+def _clamp_bbox(bbox, width, height):
+    """Clamp a pixel bbox to the image canvas (keeps a non-degenerate box)."""
+    l, t, r, b = bbox
+    l = max(0.0, min(float(l), float(width - 1)))
+    t = max(0.0, min(float(t), float(height - 1)))
+    r = max(l + 1.0, min(float(r), float(width)))
+    b = max(t + 1.0, min(float(b), float(height)))
+    return (l, t, r, b)
+
+
+def _bbox_norm(bbox, width, height):
+    l, t, r, b = bbox
+    return (l / width, t / height, r / width, b / height)
+
+
+def _heatmap_argmax_pixel(heatmap, width, height):
+    """Argmax of a [64,64] heatmap → pixel coords on ``width``×``height`` canvas."""
+    hm = heatmap.detach().cpu() if hasattr(heatmap, "detach") else heatmap
+    flat = int(hm.flatten().argmax().item())
+    pred_y, pred_x = np.unravel_index(flat, (64, 64))
+    nx = pred_x / 64.0
+    ny = pred_y / 64.0
+    return heatmap_norm_to_pixel(nx, ny, width, height)
 
 
 class DemoSys():
@@ -115,7 +140,7 @@ class DemoSys():
             if len(bbox_lst) > 0:
                 # access prediction for first person in first image. Tensor of size [64, 64]
                 # in/out of frame score (1 = in frame) (output["inout"] will be None  for non-inout models)
-                bbox_norm_lst = [(b[0]/w, b[1]/h, b[2]/w, b[3]/h) for b in bbox_lst]
+                bbox_norm_lst = [_bbox_norm(b, w, h) for b in bbox_lst]
 
                 preds = self.gt_infer(frame, bbox_norm_lst, self.gt_transform)
 
@@ -125,14 +150,14 @@ class DemoSys():
                     #    continue
 
                     inout = preds['inout'][0][i]
-                    if inout < 0.01:  # out of frame (OFT)
+                    if inout < 0.5:  # TODO: tweak out of frame (OFT) threshold
                         heatmaps[b] = 0
 
                         print("OFT with prob = ", inout)
                         overlays.append(Image.new("RGBA", frame0.size, (0, 0, 0, 0)))
                         draw = ImageDraw.Draw(overlays[-1])
-                        # Draw a semi-transparent red rectangle on the overlay
-                        draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(255, 0, 0, 70), outline=(0, 255, 0), width=7)
+                        # Draw a semi-transparent red rectangle on the overlay for OFT
+                        draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(0, 0, 214, 70), outline=(255, 0, 0), width=4)
 
                     else:  # in frame (IFT)
                         heatmap = preds['heatmap'][0][i].detach()
@@ -141,17 +166,14 @@ class DemoSys():
 
                         print("IFT with prob = ", inout)
 
-                        # convert heatmap to argmax (x,y) coordinate points
-                        bbox_norm = (b[0]/w, b[1]/h, b[2]/w, b[3]/h)
+                        bbox_norm = _bbox_norm(b, w, h)
+                        gaze_x, gaze_y = _heatmap_argmax_pixel(heatmap, w, h)
 
-                        argmax = heatmap.flatten().argmax().item()
-                        pred_y, pred_x = np.unravel_index(argmax, (64, 64))
-                        pred_x = pred_x / 64.
-                        pred_y = pred_y / 64.
-                        x, y = float(pred_x), float(pred_y)
-
-                        viz = visualize_heatmap3(frame, heatmap, bbox=bbox_norm, xy=(x * w, y * h), color="red",
-                                                 dilation_kernel=5, blur_radius=1.3, transparent_bg=True)
+                        viz = visualize_heatmap3(
+                            frame, heatmap, bbox=bbox_norm,
+                            xy=(gaze_x, gaze_y), color="red",
+                            dilation_kernel=5, blur_radius=1.3,
+                            transparent_bg=True)
 
                         viz_overlays.append(viz)
                         #plt.imshow(viz)
@@ -174,8 +196,8 @@ class DemoSys():
         for b in ecs.keys():
             overlays.append(Image.new("RGBA", frame0.size, (0, 0, 0, 0)))
             draw = ImageDraw.Draw(overlays[-1])
-            # Draw a semi-transparent green rectangle on the overlay
-            draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(0, 255, 0, 70), outline=(0, 255, 0), width=7)
+            # Draw a semi-transparent green rectangle on the overlay for EC
+            draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(0, 255, 0, 70), outline=(255, 0, 0), width=4)
 
         for overlay in overlays:
             # iteratively add overlays
@@ -195,6 +217,7 @@ class DemoSys():
     def ec_infer(self, frame, bbox_scalar=0.2):
         bbox = []
         scores = []
+        w, h = frame.size
         dets = self.cnn_face_detector(np.array(frame), 1)
         # fail to detect face if frame-aspect-ratio distorted
         #print(dets)
@@ -209,7 +232,7 @@ class DemoSys():
             r += (r - l) * bbox_scalar
             t -= (b - t) * bbox_scalar
             b += (b - t) * bbox_scalar
-            bbox.append((l, t, r, b))
+            bbox.append(_clamp_bbox((l, t, r, b), w, h))
 
         for b in bbox:
             face = frame.crop((b))
@@ -265,7 +288,7 @@ class DemoSys():
 
 
 if __name__ == "__main__":
-    the_model = "vatMoE.pt"  #"vatMoE.pt" or "pretrainMoE_MSF1_best.pt" or "GF360MoE_epoch_7.pt"
+    the_model = "vatMoE.pt"  #"vatMoE.pt" or "pretrainMoE_MSF1_best.pt" or "GF360MoE_epoch_7.pt" or "CP_best_epoch_2.pt"
     #the_model = "gazemoe_gt3d_gf.pt"
 
     demo = DemoSys(model_gt=the_model)
@@ -290,7 +313,7 @@ if __name__ == "__main__":
     #img_path = "data/00000033.jpg"
     #img_path = "data/trump_demo.mp400001.jpg"
 
-    img_path = "data/00000049.jpg"
+    img_path = "data/00002724.jpg"
 
     ec_results, heatmap_results = demo.conditional_inference(img_path, threshold=1.001, imgname=img_path.split('/')[-1])
 
