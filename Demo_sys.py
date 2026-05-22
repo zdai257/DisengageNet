@@ -125,7 +125,7 @@ class DemoSys():
                     #    continue
 
                     inout = preds['inout'][0][i]
-                    if inout < 0.5:  # out of frame (OFT)
+                    if inout < 0.01:  # out of frame (OFT)
                         heatmaps[b] = 0
 
                         print("OFT with prob = ", inout)
@@ -150,7 +150,7 @@ class DemoSys():
                         pred_y = pred_y / 64.
                         x, y = float(pred_x), float(pred_y)
 
-                        viz = visualize_heatmap3(frame, heatmap, bbox=bbox_norm, xy=(x * w, y * h), color="lime",
+                        viz = visualize_heatmap3(frame, heatmap, bbox=bbox_norm, xy=(x * w, y * h), color="red",
                                                  dilation_kernel=5, blur_radius=1.3, transparent_bg=True)
 
                         viz_overlays.append(viz)
@@ -265,8 +265,8 @@ class DemoSys():
 
 
 if __name__ == "__main__":
-    #the_model = "vatMoE.pt"  #"vatMoE.pt" or "pretrainMoE_MSF1_best.pt" or "GF360MoE_epoch_7.pt"
-    the_model = "gazemoe_gt3d_gf.pt"
+    the_model = "vatMoE.pt"  #"vatMoE.pt" or "pretrainMoE_MSF1_best.pt" or "GF360MoE_epoch_7.pt"
+    #the_model = "gazemoe_gt3d_gf.pt"
 
     demo = DemoSys(model_gt=the_model)
 
@@ -290,7 +290,7 @@ if __name__ == "__main__":
     #img_path = "data/00000033.jpg"
     #img_path = "data/trump_demo.mp400001.jpg"
 
-    img_path = "data/00001684.jpg"
+    img_path = "data/00000049.jpg"
 
     ec_results, heatmap_results = demo.conditional_inference(img_path, threshold=1.001, imgname=img_path.split('/')[-1])
 

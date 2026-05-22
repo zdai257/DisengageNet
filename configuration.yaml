@@ -1,6 +1,6 @@
 # General Configuration
 model:
-  name: "gazemoe_dinov2_vitl14_inout"  # gazemoe_dinov2_vit{b14,l14}{,_inout} | gt3d_dinov2_vit{b14,l14}{,_inout}
+  name: "gazemoe_dinov2_vitl14_inout"  # train_goo-depthaware: gazemoe_dinov2_vitl14_inout | gazelle_dinov2_vit{b,l}14{_inout}
   pretrained_path: "gazemoe_gt3d_gf.pt"  # "pretrainMoE_MSF1_best.pt" or "gazemoe_gt3d_gf.pt" or ; "" → from scratch
   mlp_ratio: 1  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size [1, 2, 4]
   num_experts: 4  # Routed experts [3, 4, 6]
@@ -11,7 +11,7 @@ model:
   is_focal_loss: 1  # if using FocalLoss for class balancing
   pbce_loss: "bce"  #"mse" or "bce" or "hybrid"
   reduction: "mean"  #"mean" or "none"
-  bce_weight: 1.0  # 0.1 for ChildPlay; disable for GOO(?) and GazeFollow
+  bce_weight: 0.0  # 0.1 for ChildPlay; disable for GOO(?) and GazeFollow
   mse_weight: 1.0
   depth_weight: 0.5  # Legacy fallback if depth_weight_start omitted
   depth_weight_start: 0.5  # GazeFollow pretrain: linear schedule → depth_weight_end
@@ -97,7 +97,7 @@ train:
   pre_fuse_lr: 0.0001
   pre_block_lr: 0.0001
   pre_batch_size: 60
-  pre_epochs: 12
+  pre_epochs: 15
   pre_optimizer: "AdamW"
   pre_weight_decay: 0.01  # only for AdamW
   # Staged DINOv2: 0 = train last N blocks from epoch 0; else unfreeze at this 0-based epoch index
@@ -119,8 +119,8 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/gazemoe_gt3d-vat/"                        # auto naming for GT3D finetune
-  pre_dir: "results/pretrain_gazemoeFT_gt3d-vat/"   # depth-aware GazeFollow pretrain
+  log_dir: "results/gazemoe_gt3d-goosynthv3/"                        # auto naming for GT3D finetune
+  pre_dir: "results/pretrain_gazemoeFT_gt3d-goosynthv3/"   # depth-aware GazeFollow pretrain
   save_every: 5
 
 hardware:

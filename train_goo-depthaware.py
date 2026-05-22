@@ -1,12 +1,17 @@
 """
 train_goo-depthaware.py — depth-aware GOO-Synth finetuning
-(simplified: GazeMoE + ONE composite auxiliary loss).
+(simplified: GazeMoE or Gazelle + ONE composite auxiliary loss).
 
 Mirrors the strategy used by ``train_gazefollow-depthaware.py`` but on the
-GOO-Synth dataset.  The model architecture is *unchanged* from the SoTA
-GazeMoE: no depth heads, no multi-task curriculum.  A single composite
-auxiliary loss using DepthAnythingV2 pseudo-labels regulates the
-heatmap into normalised (x, y, depth) ∈ [0, 1]³ coherence:
+GOO-Synth dataset.  Set ``model.name`` in ``configuration.yaml`` to pick
+the backbone:
+
+    gazemoe_dinov2_vitl14_inout          (default GazeMoE recipe)
+    gazelle_dinov2_vit{l,b}14{_inout}   (plain Gazelle via get_gazelle_model)
+
+No depth heads, no multi-task curriculum.  A single composite auxiliary loss
+using DepthAnythingV2 pseudo-labels regulates the heatmap into normalised
+(x, y, depth) ∈ [0, 1]³ coherence:
 
     L = SCALAR · BCE(pred_heatmap, depth_aware_heatmap_target)
       + w_aux_3d · gaze3d_aux_loss(...)
@@ -21,8 +26,8 @@ exactly as in the GazeFollow recipe.
 
 Inference contract
 ------------------
-Plain GazeMoE — at inference it consumes only the image and head bbox.
-No .npy depth file is needed at deploy time.
+Plain GazeMoE / Gazelle — at inference the model consumes only the image
+and head bbox.  No .npy depth file is needed at deploy time.
 
 Dataset
 -------
@@ -56,6 +61,7 @@ import wandb
 import yaml
 
 from eval import vat_auc, vat_l2
+from network.network_builder import get_gazelle_model
 from network.network_builder_update2 import get_gazemoe_model
 import network.utils as utils
 from network.utils import get_depthaware_heatmap
@@ -299,6 +305,33 @@ def angle_3d_proxy(heatmap, gazex, gazey, head_cx, head_cy, depth_64):
 # Scheduler helper (warmup + cosine).
 # --------------------------------------------------------------------------
 
+_GAZELLE_NAMES = frozenset({
+    "gazelle_dinov2_vitb14",
+    "gazelle_dinov2_vitl14",
+    "gazelle_dinov2_vitb14_inout",
+    "gazelle_dinov2_vitl14_inout",
+})
+_GAZEMOE_NAMES = frozenset({
+    "gazemoe_dinov2_vitl14_inout",
+})
+
+
+def _build_model(config):
+    """Instantiate GazeMoE or Gazelle from ``configuration.yaml`` ``model.name``."""
+    name = config["model"]["name"]
+    if name in _GAZELLE_NAMES:
+        model, transform = get_gazelle_model(config)
+        label = "Gazelle"
+    elif name in _GAZEMOE_NAMES:
+        model, transform = get_gazemoe_model(config)
+        label = "GazeMoE"
+    else:
+        raise ValueError(
+            f"Unsupported model.name {name!r} for train_goo-depthaware.py.  "
+            f"Use one of {sorted(_GAZELLE_NAMES | _GAZEMOE_NAMES)}.")
+    return model, transform, label
+
+
 def _make_warmup_cosine_lambda(total_ep, warmup_ep, eta, ref_lr):
     def lr_lambda(epoch):
         if epoch < warmup_ep:
@@ -330,24 +363,24 @@ def main():
         config=config,
     )
 
-    checkpoint_dir = "_".join([
+    ck_parts = [
         "GOO",
-        cfg_m['name'],
-        cfg_m.get('moe_type', 'vanilla'),
-        str(cfg_m.get('is_msf', 1)),
-        cfg_t['pre_optimizer'],
-        "bs" + str(cfg_t['pre_batch_size']),
-        cfg_m['pbce_loss'],
-        str(cfg_t['pre_lr']),
-        "aux" + str(cfg_m.get('w_aux_3d', 0.1)),
-    ])
+        cfg_m["name"],
+        cfg_t["pre_optimizer"],
+        "bs" + str(cfg_t["pre_batch_size"]),
+        cfg_m["pbce_loss"],
+        str(cfg_t["pre_lr"]),
+        "aux" + str(cfg_m.get("w_aux_3d", 0.1)),
+    ]
+    if cfg_m["name"] in _GAZEMOE_NAMES:
+        ck_parts[2:2] = [cfg_m.get("moe_type", "vanilla"), str(cfg_m.get("is_msf", 1))]
+    checkpoint_dir = "_".join(ck_parts)
     exp_dir = os.path.join(config['logging']['pre_dir'], checkpoint_dir)
     os.makedirs(exp_dir, exist_ok=True)
     print(f"Checkpoint dir: {exp_dir}")
 
-    # ---- Model — plain GazeMoE (no depth heads, no curriculum) ---------
-    model, transform = get_gazemoe_model(config)
-    print(f"Model: {cfg_m['name']} (plain GazeMoE; depth used only as aux loss)")
+    model, transform, model_label = _build_model(config)
+    print(f"Model: {cfg_m['name']} (plain {model_label}; depth used only as aux loss)")
 
     # Freeze backbone (same as the GazeFollow recipe).
     for param in model.backbone.parameters():
