@@ -1,7 +1,7 @@
 # General Configuration
 model:
   name: "gazemoe_dinov2_vitl14_inout"  # train_goo-depthaware: gazemoe_dinov2_vitl14_inout | gazelle_dinov2_vit{b,l}14{_inout}
-  pretrained_path: "gazemoe_gt3d_gf.pt"  # "pretrainMoE_MSF1_best.pt" or "gazemoe_gt3d_gf.pt" or ; "" → from scratch
+  pretrained_path: ""  # "pretrainMoE_MSF1_best.pt" or "gazemoe_gt3d_gf.pt" or ; "" → from scratch
   mlp_ratio: 1  # hidden_dim = ( ) * in_feats, ratio between FFN dim and input feature size [1, 2, 4]
   num_experts: 4  # Routed experts [3, 4, 6]
   num_shared_experts: 1  # Shared experts [1, 2]
@@ -13,7 +13,7 @@ model:
   reduction: "mean"  #"mean" or "none"
   bce_weight: 0.0  # 0.1 for ChildPlay; disable for GOO(?) and GazeFollow
   mse_weight: 1.0
-  depth_weight: 0.5  # Legacy fallback if depth_weight_start omitted
+  depth_weight: 0.5  # Legacy !
   depth_weight_start: 0.5  # GazeFollow pretrain: linear schedule → depth_weight_end
   depth_weight_end: 0.1
   angle_weight: 0.0  # 0.05 / 0.1
@@ -47,12 +47,12 @@ model:
   # Finetune-mode defaults (warm-started from pretrainMoE_MSF1_best.pt):
   # keep the auxiliary signal small and ramp it slowly so the GazeMoE
   # 2-D basin is preserved before depth coherence is enforced.
-  w_aux_3d:             0.02  # overall weight on L_aux (small ⇒ BCE dominates)
+  w_aux_3d:             0.04  # overall weight on L_aux (small ⇒ BCE dominates)
   aux_3d_warmup_epochs: 3     # linear warmup of w_aux from 0 over the first N epochs
   aux_3d_depth_weight:  1.0   # internal balance of depth-coherence vs 2-D angular
   aux_3d_temperature: null    # null → use sigmoid heatmap as probability;
                               # set a float (e.g. 0.05) for a sharper softmax attention
-
+  gauss_hm_sigma: 0.0  # if 0.0 then using depthaware heatmap; or use Gaussian heatmap with sigma =
   # --- GT3D heads (consumed only by train_depth_goo.py / train_depth_gazefollow.py) ---
   # These toggles are unused by the simplified depth-aware GazeFollow trainer
   # above; left here so other depth-aware scripts can still find them.
@@ -97,7 +97,7 @@ train:
   pre_fuse_lr: 0.0001
   pre_block_lr: 0.0001
   pre_batch_size: 60
-  pre_epochs: 15
+  pre_epochs: 25
   pre_optimizer: "AdamW"
   pre_weight_decay: 0.01  # only for AdamW
   # Staged DINOv2: 0 = train last N blocks from epoch 0; else unfreeze at this 0-based epoch index
@@ -106,7 +106,7 @@ train:
   pre_backbone_lr: 0.000005
   pre_lr_scheduler:
     type: "warmup_cosine"           # warmup_cosine | cosine | warmup | StepLR-compatible keys
-    warmup_epochs: 1                # finetune-mode: short LR warmup
+    warmup_epochs: 2                # finetune-mode: short LR warmup
     step_size: 8                    # used by cosine / step branches only
     gamma: 0.1
     min_lr: 1e-7
@@ -119,8 +119,8 @@ inference:
   checkpoint: ""
 
 logging:
-  log_dir: "results/gazemoe_gt3d-goosynthv3/"                        # auto naming for GT3D finetune
-  pre_dir: "results/pretrain_gazemoeFT_gt3d-goosynthv3/"   # depth-aware GazeFollow pretrain
+  log_dir: "results/gazemoe-gt3d-abla_/"                        # auto naming for GT3D finetune
+  pre_dir: "results/pretrain_gazemoe-gt3d-abla_w4e-2/"   # depth-aware GazeFollow pretrain
   save_every: 5
 
 hardware:

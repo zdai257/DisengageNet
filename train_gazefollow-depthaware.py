@@ -128,7 +128,7 @@ class GazeDepthDataset(torch.utils.data.Dataset):
     """
 
     def __init__(self, dataset_name, path, split, transform,
-                 in_frame_only=True, aug_groups=None, depth_dir='depth'):
+                 in_frame_only=True, aug_groups=None, depth_dir='depth', is_gauss_hm=0):
         self.dataset_name = dataset_name
         self.path = path
         self.depth_dir = depth_dir
@@ -138,6 +138,7 @@ class GazeDepthDataset(torch.utils.data.Dataset):
         self.transform = transform
         self.in_frame_only = in_frame_only
         self.aug_groups = aug_groups if aug_groups is not None else []
+        self.is_gauss_hm = is_gauss_hm
 
         if dataset_name == "gazefollow":
             with open(os.path.join(self.path,
@@ -232,8 +233,12 @@ class GazeDepthDataset(torch.utils.data.Dataset):
             # post-augmentation depth so the target is consistent with the
             # augmented gaze coordinates.
             depth_full = np.asarray(depth_pil, dtype=np.float32)
-            heatmap = get_depthaware_heatmap(
-                depth_full, gazex_norm[0], gazey_norm[0], 64, 64)
+            
+            if isinstance(self.is_gauss_hm, float) and self.is_gauss_hm > 0:
+                heatmap = utils.get_heatmap(gazex_norm[0], gazey_norm[0], 64, 64, sigma=self.is_gauss_hm)
+            else:
+                heatmap = get_depthaware_heatmap(depth_full, gazex_norm[0], gazey_norm[0], 64, 64)
+
             return (img_t, bbox_norm, gazex_norm, gazey_norm,
                     torch.tensor(inout), height, width,
                     heatmap, depth_64_t)
@@ -358,6 +363,7 @@ def main():
         cfg_m['pbce_loss'],
         str(cfg_t['pre_lr']),
         "aux" + str(cfg_m.get('w_aux_3d', 0.1)),
+        "sigma" + str(cfg_m.get('gauss_hm_sigma', 0.0))
     ])
     exp_dir = os.path.join(config['logging']['pre_dir'], checkpoint_dir)
     os.makedirs(exp_dir, exist_ok=True)
@@ -392,9 +398,11 @@ def main():
 
     # ---- Datasets / loaders --------------------------------------------
     depth_dir = cfg_d.get('depth_dir', 'depth')
+    hm_sigma = cfg_m.get('gauss_hm_sigma', 0.0)
+
     train_dataset = GazeDepthDataset(
         'gazefollow', cfg_d['pre_train_path'], 'train', transform,
-        aug_groups=cfg_d.get('augmentations', []), depth_dir=depth_dir)
+        aug_groups=cfg_d.get('augmentations', []), depth_dir=depth_dir, is_gauss_hm=hm_sigma)
     eval_dataset = GazeDepthDataset(
         'gazefollow', cfg_d['pre_test_path'], 'test', transform,
         depth_dir=depth_dir)

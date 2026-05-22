@@ -9,14 +9,7 @@ Loss = L_heatmap (BCE)
      + λ_io · L_inout (BCE / Focal)
      + λ_d  · L_depth (Gaussian-masked log-Huber)
 
-The depth loss is *spatially weighted by the GT heatmap* (sigma=3 Gaussian
-around the gaze target).  Pixels far from the target therefore contribute
-~0 to the loss, so the depth head is forced to learn
-
-    "what is the depth value at and immediately around the gaze target",
-
-instead of the much easier (and uninformative for this task) global
-pixel-by-pixel depth-map reconstruction.
+     Ditched method!
 """
 
 import os

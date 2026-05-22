@@ -144,8 +144,112 @@ class DemoSys():
         self.model_gt.to(self.device)
         self.model_gt.eval()
 
+    def _load_frame_pil(self, input_data, max_size=896):
+        """Load a frame from a path, PIL image, or RGB ndarray."""
+        if isinstance(input_data, Image.Image):
+            frame = input_data.convert("RGB")
+        elif isinstance(input_data, str):
+            frame = Image.open(input_data).convert("RGB")
+        elif isinstance(input_data, np.ndarray):
+            if input_data.ndim != 3 or input_data.shape[2] not in (3, 4):
+                raise TypeError("Expected H×W×3/4 ndarray for frame input")
+            arr = input_data[:, :, :3]
+            if arr.dtype != np.uint8:
+                arr = np.clip(arr, 0, 255).astype(np.uint8)
+            frame = Image.fromarray(arr, mode="RGB")
+        else:
+            raise TypeError(f"Unsupported frame input type: {type(input_data)!r}")
+
+        if max_size and max_size > 0:
+            frame = frame.copy()
+            frame.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+        return frame
+
+    def render_frame(self, input_data, threshold=EC_THRES, manual_bboxes_norm=None,
+                     max_size=896, verbose=False):
+        """Run EC + gaze inference on one frame; return composited RGB PIL image.
+
+        Accepts an image path, ``PIL.Image``, or H×W×3 RGB ``numpy`` array.
+        No files are written — intended for video streaming in ``vidDemo.py``.
+        """
+        frame = self._load_frame_pil(input_data, max_size=max_size)
+        if verbose:
+            print(frame.width, frame.height)
+        w, h = frame.size
+
+        frame0 = frame.convert("RGBA")
+        final_overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+        overlays = []
+        viz_overlays = []
+        manual_norm_lst = _parse_manual_bboxes_norm(manual_bboxes_norm)
+
+        with torch.no_grad():
+            ecs = {}
+            heatmaps = {}
+            bbox_lst = []
+
+            if manual_norm_lst is not None:
+                if verbose:
+                    print(f"Manual bbox mode: {len(manual_norm_lst)} head(s)")
+                for bb_norm in manual_norm_lst:
+                    bbox_lst.append(_norm_bbox_to_pixel(bb_norm, w, h))
+            else:
+                ec_prob, bboxes = self.ec_infer(frame, bbox_scalar=0.2, verbose=verbose)
+                for prob, bbox in zip(ec_prob, bboxes):
+                    if float(prob) < threshold:
+                        bbox_lst.append(bbox)
+                    else:
+                        ecs[bbox] = 1
+
+            if len(bbox_lst) > 0:
+                bbox_norm_lst = manual_norm_lst if manual_norm_lst is not None else [
+                    _bbox_norm(b, w, h) for b in bbox_lst
+                ]
+                preds = self.gt_infer(frame, bbox_norm_lst, self.gt_transform)
+
+                for i, b in enumerate(bbox_lst):
+                    inout = preds['inout'][0][i]
+                    if inout < 0.5:
+                        heatmaps[b] = 0
+                        if verbose:
+                            print("OFT with prob = ", inout)
+                        overlays.append(Image.new("RGBA", frame0.size, (0, 0, 0, 0)))
+                        draw = ImageDraw.Draw(overlays[-1])
+                        draw.rectangle(
+                            [(b[0], b[1]), (b[2], b[3])],
+                            fill=(0, 0, 214, 70), outline=(255, 0, 0), width=4)
+                    else:
+                        heatmap = preds['heatmap'][0][i].detach()
+                        heatmaps[b] = heatmap
+                        if verbose:
+                            print("IFT with prob = ", inout)
+                        bbox_norm = bbox_norm_lst[i]
+                        gaze_x, gaze_y = _heatmap_argmax_pixel(heatmap, w, h)
+                        viz = visualize_heatmap3(
+                            frame, heatmap, bbox=bbox_norm,
+                            xy=(gaze_x, gaze_y), color="red",
+                            dilation_kernel=5, blur_radius=1.3,
+                            transparent_bg=True)
+                        viz_overlays.append(viz)
+
+                for viz_overlay in viz_overlays:
+                    final_overlay = Image.alpha_composite(final_overlay, viz_overlay)
+
+        for b in ecs.keys():
+            overlays.append(Image.new("RGBA", frame0.size, (0, 0, 0, 0)))
+            draw = ImageDraw.Draw(overlays[-1])
+            draw.rectangle(
+                [(b[0], b[1]), (b[2], b[3])],
+                fill=(0, 255, 0, 70), outline=(255, 0, 0), width=4)
+
+        for overlay in overlays:
+            final_overlay = Image.alpha_composite(final_overlay, overlay)
+
+        frame2show = Image.alpha_composite(frame.convert("RGBA"), final_overlay)
+        return frame2show.convert("RGB"), ecs, heatmaps
+
     def conditional_inference(self, input_data, threshold=EC_THRES, outdir='processed',
-                              imgname=None, manual_bboxes_norm=None):
+                              imgname=None, manual_bboxes_norm=None, max_size=896):
         """Run EC + gaze inference on an image.
 
         Args:
@@ -160,123 +264,23 @@ class DemoSys():
 
                 Example (one head): ``[0.35, 0.12, 0.55, 0.42]``
                 Example (CLI):     ``--bbox 0.35,0.12,0.55,0.42``
+            max_size: Longest side after thumbnail resize (default 896).
         """
-        fig_saved_token = False
+        os.makedirs(outdir, exist_ok=True)
+        frame_rgb, ecs, heatmaps = self.render_frame(
+            input_data, threshold=threshold,
+            manual_bboxes_norm=manual_bboxes_norm,
+            max_size=max_size, verbose=True)
 
-        frame = Image.open(input_data).convert("RGB")
-
-        # resize image
-        frame.thumbnail((896, 896))  # (896, 896)
-        print(frame.width, frame.height)
-        w, h = frame.width, frame.height
-
-        frame0 = frame.convert("RGBA")
-
-        final_overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
-
-        # Create a series of transparent overlay for drawing
-        overlays = []
-        viz_overlays = []
-
-        manual_norm_lst = _parse_manual_bboxes_norm(manual_bboxes_norm)
-
-        with torch.no_grad():
-
-            ecs = {}
-            heatmaps = {}
-            bbox_lst = []
-
-            if manual_norm_lst is not None:
-                print(f"Manual bbox mode: {len(manual_norm_lst)} head(s)")
-                for bb_norm in manual_norm_lst:
-                    bbox_lst.append(_norm_bbox_to_pixel(bb_norm, w, h))
-            else:
-                ec_prob, bboxes = self.ec_infer(frame, bbox_scalar=0.2)
-                # decide stage2 inference
-                for prob, bbox in zip(ec_prob, bboxes):
-                    if float(prob) < threshold:
-                        bbox_lst.append(bbox)
-                    else:
-                        ecs[bbox] = 1
-
-            if len(bbox_lst) > 0:
-                bbox_norm_lst = manual_norm_lst if manual_norm_lst is not None else [
-                    _bbox_norm(b, w, h) for b in bbox_lst
-                ]
-
-                preds = self.gt_infer(frame, bbox_norm_lst, self.gt_transform)
-
-                for i, b in enumerate(bbox_lst):  # per face
-                    ### Carefully remove this if visual multi faces ###
-                    #if i == 0:
-                    #    continue
-
-                    inout = preds['inout'][0][i]
-                    if inout < 0.5:  # TODO: tweak out of frame (OFT) threshold
-                        heatmaps[b] = 0
-
-                        print("OFT with prob = ", inout)
-                        overlays.append(Image.new("RGBA", frame0.size, (0, 0, 0, 0)))
-                        draw = ImageDraw.Draw(overlays[-1])
-                        # Draw a semi-transparent red rectangle on the overlay for OFT
-                        draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(0, 0, 214, 70), outline=(255, 0, 0), width=4)
-
-                    else:  # in frame (IFT)
-                        heatmap = preds['heatmap'][0][i].detach()
-
-                        heatmaps[b] = heatmap
-
-                        print("IFT with prob = ", inout)
-
-                        bbox_norm = bbox_norm_lst[i]
-                        gaze_x, gaze_y = _heatmap_argmax_pixel(heatmap, w, h)
-
-                        viz = visualize_heatmap3(
-                            frame, heatmap, bbox=bbox_norm,
-                            xy=(gaze_x, gaze_y), color="red",
-                            dilation_kernel=5, blur_radius=1.3,
-                            transparent_bg=True)
-
-                        viz_overlays.append(viz)
-                        #plt.imshow(viz)
-                        #plt.show()
-
-                        '''
-                        if self.savefigs and not fig_saved_token:
-                            if imgname is None:
-                                viz.convert("RGB").save(join(outdir, "ift_" + self.saved_path))
-                            else:
-                                viz.convert("RGB").save(join(outdir, imgname + '.png'))
-                            fig_saved_token = True
-                        '''
-                        #plt.close()
-                    #break
-
-                for viz_overlay in viz_overlays:
-                    final_overlay = Image.alpha_composite(final_overlay, viz_overlay)
-
-        for b in ecs.keys():
-            overlays.append(Image.new("RGBA", frame0.size, (0, 0, 0, 0)))
-            draw = ImageDraw.Draw(overlays[-1])
-            # Draw a semi-transparent green rectangle on the overlay for EC
-            draw.rectangle([(b[0], b[1]), (b[2], b[3])], fill=(0, 255, 0, 70), outline=(255, 0, 0), width=4)
-
-        for overlay in overlays:
-            # iteratively add overlays
-            final_overlay = Image.alpha_composite(final_overlay, overlay)
-
-        frame2show = Image.alpha_composite(frame.convert('RGBA'), final_overlay)
-        #frame2show.show()
-
-        if self.savefigs and not fig_saved_token:
+        if self.savefigs:
             if imgname is None:
-                frame2show.convert("RGB").save(join(outdir, "MoE_" + self.saved_path))
+                frame_rgb.save(join(outdir, "MoE_" + self.saved_path))
             else:
-                frame2show.convert("RGB").save(join(outdir, imgname + '.png'))
+                frame_rgb.save(join(outdir, imgname + '.png'))
 
         return ecs, heatmaps
         
-    def ec_infer(self, frame, bbox_scalar=0.2):
+    def ec_infer(self, frame, bbox_scalar=0.2, verbose=True):
         bbox = []
         scores = []
         w, h = frame.size
@@ -304,7 +308,8 @@ class DemoSys():
             # forward pass
             output = self.model_ec(img.to(self.device))
             score = F.sigmoid(output).item()
-            print(f"face prob: {score}, bbox value: {b}")
+            if verbose:
+                print(f"face prob: {score}, bbox value: {b}")
 
             scores.append(score)
 
@@ -319,32 +324,26 @@ class DemoSys():
         # frame.save(saved_path)
         return scores, bbox
     
-    def gt_infer(self, image, bboxes, transform):
+    def gt_infer(self, image, bboxes, transform, profile=False):
         
         input = {
             "images": transform(image).unsqueeze(dim=0).to(self.device),    # tensor of shape [1, 3, 448, 448]
             "bboxes": [bboxes]
         }
-        
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            profile_memory=True
-        ) as prof:
-            
-            #for _ in range(5):  # warmup
-            #    _ = self.model_gt(input)
 
-            torch.cuda.synchronize()
-            start = time.time()
-
+        if profile:
+            with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU,
+                            torch.profiler.ProfilerActivity.CUDA],
+                profile_memory=True,
+            ) as prof:
+                torch.cuda.synchronize()
+                start = time.time()
+                output = self.model_gt(input)
+                torch.cuda.synchronize()
+                end = time.time()
+        else:
             output = self.model_gt(input)
-
-            torch.cuda.synchronize()  # Make sure all CUDA ops are done
-            end = time.time()
-            #print(f"Total inference latency: {(end - start) * 1000:.3f} ms")
-        #print(prof.key_averages().table(sort_by="self_cuda_memory_usage"))
-
-        # convert output to Visualizalbe heatmap
 
         return output
 
