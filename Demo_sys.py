@@ -57,6 +57,47 @@ def _heatmap_argmax_pixel(heatmap, width, height):
     return heatmap_norm_to_pixel(nx, ny, width, height)
 
 
+def _sanitize_bbox_norm(bbox_norm):
+    """Clamp and order a normalised bbox ``[xmin, ymin, xmax, ymax]`` ∈ [0, 1]²."""
+    xmin, ymin, xmax, ymax = (float(v) for v in bbox_norm)
+    xmin = max(0.0, min(1.0, xmin))
+    ymin = max(0.0, min(1.0, ymin))
+    xmax = max(0.0, min(1.0, xmax))
+    ymax = max(0.0, min(1.0, ymax))
+    if xmin > xmax:
+        xmin, xmax = xmax, xmin
+    if ymin > ymax:
+        ymin, ymax = ymax, ymin
+    if xmax - xmin < 1e-4 or ymax - ymin < 1e-4:
+        raise ValueError(f"Degenerate normalised bbox: {bbox_norm!r}")
+    return (xmin, ymin, xmax, ymax)
+
+
+def _parse_manual_bboxes_norm(manual_bboxes_norm):
+    """Accept one bbox ``[x1,y1,x2,y2]`` or a list of such (normalised coords)."""
+    if manual_bboxes_norm is None:
+        return None
+    if len(manual_bboxes_norm) == 4 and all(
+            isinstance(v, (int, float, np.floating)) for v in manual_bboxes_norm):
+        return [_sanitize_bbox_norm(manual_bboxes_norm)]
+    out = []
+    for bb in manual_bboxes_norm:
+        if len(bb) != 4:
+            raise ValueError(
+                "manual_bboxes_norm entries must be [xmin, ymin, xmax, ymax]; "
+                f"got {bb!r}")
+        out.append(_sanitize_bbox_norm(bb))
+    return out
+
+
+def _norm_bbox_to_pixel(bbox_norm, width, height):
+    xmin, ymin, xmax, ymax = bbox_norm
+    return _clamp_bbox(
+        (xmin * width, ymin * height, xmax * width, ymax * height),
+        width, height,
+    )
+
+
 class DemoSys():
     def __init__(self, model_gt='gazelle_dinov2_vitl14_inout.pt', model_ec=MODEL_WEIGHTS, facedetect=None):
         self.saved_path = "GazeMoEoutput.png"
@@ -103,7 +144,23 @@ class DemoSys():
         self.model_gt.to(self.device)
         self.model_gt.eval()
 
-    def conditional_inference(self, input_data, threshold=EC_THRES, outdir='processed', imgname=None):
+    def conditional_inference(self, input_data, threshold=EC_THRES, outdir='processed',
+                              imgname=None, manual_bboxes_norm=None):
+        """Run EC + gaze inference on an image.
+
+        Args:
+            input_data: Path to an image file.
+            threshold: EC score threshold; faces below this go to the gaze model.
+            manual_bboxes_norm: Optional head bbox(es) in **normalised** image
+                coords ``[xmin, ymin, xmax, ymax]`` with values in [0, 1].
+                Pass a single 4-tuple/list for one head, or a list of 4-tuples
+                for several.  When set, dlib face detection is skipped and the
+                gaze model runs directly on the supplied box(es) — useful when
+                the auto detector misses a subject.
+
+                Example (one head): ``[0.35, 0.12, 0.55, 0.42]``
+                Example (CLI):     ``--bbox 0.35,0.12,0.55,0.42``
+        """
         fig_saved_token = False
 
         frame = Image.open(input_data).convert("RGB")
@@ -121,26 +178,31 @@ class DemoSys():
         overlays = []
         viz_overlays = []
 
+        manual_norm_lst = _parse_manual_bboxes_norm(manual_bboxes_norm)
+
         with torch.no_grad():
-            
-            ec_prob, bboxes = self.ec_infer(frame, bbox_scalar=0.2)
 
             ecs = {}
             heatmaps = {}
             bbox_lst = []
-            # decide stage2 inference
-            for prob, bbox in zip(ec_prob, bboxes):
-                if float(prob) < threshold:
-                    bbox_lst.append(bbox)
-                    
-                else:
-                    ecs[bbox] = 1
 
-            # only if some faces are non-EC
+            if manual_norm_lst is not None:
+                print(f"Manual bbox mode: {len(manual_norm_lst)} head(s)")
+                for bb_norm in manual_norm_lst:
+                    bbox_lst.append(_norm_bbox_to_pixel(bb_norm, w, h))
+            else:
+                ec_prob, bboxes = self.ec_infer(frame, bbox_scalar=0.2)
+                # decide stage2 inference
+                for prob, bbox in zip(ec_prob, bboxes):
+                    if float(prob) < threshold:
+                        bbox_lst.append(bbox)
+                    else:
+                        ecs[bbox] = 1
+
             if len(bbox_lst) > 0:
-                # access prediction for first person in first image. Tensor of size [64, 64]
-                # in/out of frame score (1 = in frame) (output["inout"] will be None  for non-inout models)
-                bbox_norm_lst = [_bbox_norm(b, w, h) for b in bbox_lst]
+                bbox_norm_lst = manual_norm_lst if manual_norm_lst is not None else [
+                    _bbox_norm(b, w, h) for b in bbox_lst
+                ]
 
                 preds = self.gt_infer(frame, bbox_norm_lst, self.gt_transform)
 
@@ -166,7 +228,7 @@ class DemoSys():
 
                         print("IFT with prob = ", inout)
 
-                        bbox_norm = _bbox_norm(b, w, h)
+                        bbox_norm = bbox_norm_lst[i]
                         gaze_x, gaze_y = _heatmap_argmax_pixel(heatmap, w, h)
 
                         viz = visualize_heatmap3(
@@ -288,34 +350,37 @@ class DemoSys():
 
 
 if __name__ == "__main__":
-    the_model = "vatMoE.pt"  #"vatMoE.pt" or "pretrainMoE_MSF1_best.pt" or "GF360MoE_epoch_7.pt" or "CP_best_epoch_2.pt"
-    #the_model = "gazemoe_gt3d_gf.pt"
+    import argparse
 
-    demo = DemoSys(model_gt=the_model)
+    parser = argparse.ArgumentParser(
+        description="DemoSys — EC + GazeMoE gaze-target visualization")
+    parser.add_argument("image", nargs="?", default="data/921.png",
+                        help="Input image path")
+    parser.add_argument("--model_gt", default="vatMoE.pt",
+                        help="Gaze-model checkpoint (.pt)")
+    parser.add_argument("--bbox", default=None,
+                        help="Optional manual head bbox in normalised coords: "
+                             "xmin,ymin,xmax,ymax  (skips face detector)")
+    parser.add_argument("--threshold", type=float, default=EC_THRES,
+                        help="EC threshold (auto-detect mode only)")
+    parser.add_argument("--outdir", default="processed")
+    args = parser.parse_args()
 
-    #img_path = "data/WALIexample0.png"
-    #img_path = "data/WALIHRIexample1.png"
-    #img_path = "data/WALIHRIexample2.png"
-    #img_path = "data/WALIHRIexample3.png"
-    #img_path = "data/WALIexample4.jpg"
-    #img_path = "data/joye.jpg"
-    #img_path = "data/0028_2m_-15P_10V_5H.jpg"
-    #img_path = "data/0028_2m_30P_0V_0H.jpg"
-    #img_path = "data/0018_2m_15P_0V_0H.jpg"
-    #img_path = "data/example-16_A_FT_M.png"
-    #img_path = "data/example-2_A_FT_M.png"
-    #img_path = "data/example-8_A_FT_M.png"
-    #img_path = "data/0041.jpg"
-    #img_path = "data/0000867.jpg"  # interesting
-    #img_path = "data/0000051.jpg"
-    #img_path = "data/0000000.jpg"
-    #img_path = "data/00004218.jpg"
-    #img_path = "data/00000033.jpg"
-    #img_path = "data/trump_demo.mp400001.jpg"
+    manual = None
+    if args.bbox:
+        manual = [float(x.strip()) for x in args.bbox.split(",")]
+        if len(manual) != 4:
+            parser.error("--bbox requires exactly four comma-separated values")
 
-    img_path = "data/00002724.jpg"
+    demo = DemoSys(model_gt=args.model_gt)
 
-    ec_results, heatmap_results = demo.conditional_inference(img_path, threshold=1.001, imgname=img_path.split('/')[-1])
+    ec_results, heatmap_results = demo.conditional_inference(
+        args.image,
+        threshold=args.threshold,
+        outdir=args.outdir,
+        imgname=args.image.split("/")[-1],
+        manual_bboxes_norm=manual,
+    )
 
     print(ec_results.keys(), heatmap_results.keys())
 
